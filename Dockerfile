@@ -15,9 +15,8 @@ ENV PATH="$HP_SDIR:$HP_BDIR:$PATH"
 
 RUN apt-get -y update
 RUN apt-get install -y wget tar nano curl git
-COPY . .
+COPY . /MitoHPC/
 ###########################################
-RUN ls -l 
 RUN \
   chmod a+x $HP_SDIR/*.* && \
   . $HP_SDIR/init.sh && \
