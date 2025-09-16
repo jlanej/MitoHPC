@@ -123,11 +123,16 @@ https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9112767/
 ### PARALLELIZATION ###
 
     # The pipeline automatically detects available CPU cores and utilizes them for improved performance
-    # Default: HP_P = number of CPU cores (no limit), HP_MM = 2G per core
+    # Default: HP_P = number of CPU cores (no limit), HP_MM_TOTAL = 2G per core, HP_MM = 2G per thread for samtools
     # Override: export HP_P=<desired_threads> before sourcing init.sh  
     # Example:
     $ export HP_P=2                          # use 2 threads instead of auto-detected
-    $ . ./init.sh                            # source init file with custom thread count (memory will be 4G)
+    $ . ./init.sh                            # source init file with custom thread count (total memory will be 4G)
+    
+    # Memory allocation strategy:
+    # HP_MM_TOTAL - Total memory for job schedulers (SLURM/SGE): 2G * HP_P
+    # HP_MM - Per-thread memory for samtools sort: 2G (safe allocation per thread)
+    # This prevents memory conflicts where samtools sort could over-allocate memory
 
 ## DOCKERHUB IMAGE  ##
 

@@ -82,10 +82,11 @@ else
     export HP_P=$HP_P  # Use user-provided value
 fi
 
-# Set memory to 2G per core
-HP_MM_CALC=$((HP_P * 2))
-export HP_MM="${HP_MM_CALC}G"                                        # maximum memory (2G per core)
-export HP_JOPT="-Xms$HP_MM -Xmx$HP_MM -XX:ParallelGCThreads=$HP_P"  # JAVA options
+# Set memory allocation: 2G per core dynamically
+HP_MM_TOTAL_CALC=$((HP_P * 2))
+export HP_MM_TOTAL="${HP_MM_TOTAL_CALC}G"                # total memory for job schedulers (2G per core)
+export HP_MM="2G"                                        # per-thread memory for samtools sort (safe allocation)
+export HP_JOPT="-Xms$HP_MM_TOTAL -Xmx$HP_MM_TOTAL -XX:ParallelGCThreads=$HP_P"  # JAVA options
 ################################################################
 #INPUT/OUTPUT
 
@@ -105,5 +106,5 @@ fi
 #JOB SCHEDULING
 
 export HP_SH="bash" ;                                                                        export HP_SHS="$HP_SH"                     # bash
-#export HP_SH="sbatch -J HP_$$ --cpus-per-task=$HP_P --nodes=1 --mem=$HP_MM --time=20:00" ;  export HP_SHS="$HP_SH -d singleton"        # SLURM
-#export HP_SH="qsub -V -N HP_$$ -l mem_free=$HP_MM,h_vmem=$HP_MM -pe local $HP_P -cwd" ;     export HP_SHS="$HP_SH -hold_jid HP_$$"     # SGE
+#export HP_SH="sbatch -J HP_$$ --cpus-per-task=$HP_P --nodes=1 --mem=$HP_MM_TOTAL --time=20:00" ;  export HP_SHS="$HP_SH -d singleton"        # SLURM
+#export HP_SH="qsub -V -N HP_$$ -l mem_free=$HP_MM_TOTAL,h_vmem=$HP_MM_TOTAL -pe local $HP_P -cwd" ;     export HP_SHS="$HP_SH -hold_jid HP_$$"     # SGE
