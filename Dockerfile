@@ -15,10 +15,10 @@ ENV PATH="$HP_SDIR:$HP_BDIR:$PATH"
 
 RUN apt-get -y update
 RUN apt-get install -y wget tar nano curl git
-
+COPY . .
 ###########################################
+  
 RUN \
-  git clone https://github.com/jlanej/MitoHPC && \
   chmod a+x $HP_SDIR/*.* && \
   . $HP_SDIR/init.sh && \
   $HP_SDIR/install_sysprerequisites.sh && \
