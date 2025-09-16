@@ -17,7 +17,7 @@ RUN apt-get -y update
 RUN apt-get install -y wget tar nano curl git
 COPY . .
 ###########################################
-  
+RUN ls -l 
 RUN \
   chmod a+x $HP_SDIR/*.* && \
   . $HP_SDIR/init.sh && \
