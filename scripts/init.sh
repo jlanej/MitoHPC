@@ -110,8 +110,18 @@ export HP_V=                     # SV caller: gridssexport HP_DP=100            
 
 export HP_FRULE="perl -ane 'print unless(/strict_strand|strand_bias|base_qual|map_qual|weak_evidence|slippage|position|Homopolymer/ and /:0\.[01234]\d+$/);' |  bcftools filter -e 'DP<$HP_DP'"   # filter rule (or just "tee")
 
-export HP_P=1				       		            # number of processors
-export HP_MM="3G"                                                   # maximum memory
+# Automatically detect available CPU cores, with user override capability
+if [ -z "$HP_P" ]; then
+    # Default to number of available processors
+    HP_P_AUTO=$(nproc 2>/dev/null || echo 1)
+    export HP_P=$HP_P_AUTO
+else
+    export HP_P=$HP_P  # Use user-provided value
+fi
+
+# Set memory to 2G per core
+HP_MM_CALC=$((HP_P * 2))
+export HP_MM="${HP_MM_CALC}G"                                        # maximum memory (2G per core)
 export HP_JOPT="-Xms$HP_MM -Xmx$HP_MM -XX:ParallelGCThreads=$HP_P"  # JAVA options
 ################################################################
 #INPUT/OUTPUT

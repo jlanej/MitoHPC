@@ -120,6 +120,15 @@ https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9112767/
 
     $ bash ./run.all.sh
 
+### PARALLELIZATION ###
+
+    # The pipeline automatically detects available CPU cores and utilizes them for improved performance
+    # Default: HP_P = number of CPU cores (no limit), HP_MM = 2G per core
+    # Override: export HP_P=<desired_threads> before sourcing init.sh  
+    # Example:
+    $ export HP_P=2                          # use 2 threads instead of auto-detected
+    $ . ./init.sh                            # source init file with custom thread count (memory will be 4G)
+
 ## DOCKERHUB IMAGE  ##
 
     # available at
