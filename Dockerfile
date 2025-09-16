@@ -18,7 +18,7 @@ RUN apt-get install -y wget tar nano curl git
 
 ###########################################
 RUN \
-  git clone https://github.com/dpuiu/MitoHPC && \
+  git clone https://github.com/jlanej/MitoHPC && \
   chmod a+x $HP_SDIR/*.* && \
   . $HP_SDIR/init.sh && \
   $HP_SDIR/install_sysprerequisites.sh && \
