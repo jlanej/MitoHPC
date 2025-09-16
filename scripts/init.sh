@@ -119,9 +119,7 @@ else
     export HP_P=$HP_P  # Use user-provided value
 fi
 
-# Set memory to 2G per core
-HP_MM_CALC=$((HP_P * 2))
-export HP_MM="${HP_MM_CALC}G"                                        # maximum memory (2G per core)
+export HP_MM="3G"                                        # maximum memory (2G per core)
 export HP_JOPT="-Xms$HP_MM -Xmx$HP_MM -XX:ParallelGCThreads=$HP_P"  # JAVA options
 ################################################################
 #INPUT/OUTPUT
