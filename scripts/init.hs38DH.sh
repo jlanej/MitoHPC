@@ -78,20 +78,16 @@ export HP_FRULE="perl -ane 'print unless(/strict_strand|strand_bias|base_qual|ma
 
 # Automatically detect available CPU cores, with user override capability
 if [ -z "$HP_P" ]; then
-    # Default to number of available processors, with a maximum of 8 to avoid memory issues
+    # Default to number of available processors
     HP_P_AUTO=$(nproc 2>/dev/null || echo 1)
-    if [ "$HP_P_AUTO" -gt 8 ]; then
-        export HP_P=8
-    elif [ "$HP_P_AUTO" -gt 1 ]; then
-        export HP_P=$HP_P_AUTO
-    else
-        export HP_P=1
-    fi
+    export HP_P=$HP_P_AUTO
 else
     export HP_P=$HP_P  # Use user-provided value
 fi
 
-export HP_MM="3G"                                                   # maximum memory
+# Set memory to 2G per core
+HP_MM_CALC=$((HP_P * 2))
+export HP_MM="${HP_MM_CALC}G"                                        # maximum memory (2G per core)
 export HP_JOPT="-Xms$HP_MM -Xmx$HP_MM -XX:ParallelGCThreads=$HP_P"  # JAVA options
 ################################################################
 #INPUT/OUTPUT
