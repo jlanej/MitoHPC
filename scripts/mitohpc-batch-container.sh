@@ -183,12 +183,30 @@ EOF
 
 chmod +x "$TEMP_SCRIPT"
 
+# Calculate appropriate HP_P value to prevent resource conflicts
+# If HP_P is not explicitly set by the user, we should set it to a reasonable value
+# to prevent each parallel job from trying to use all available cores
+TOTAL_CORES=$(nproc 2>/dev/null || echo 4)
+if [ -z "$HP_P" ]; then
+    # Calculate threads per sample: max(1, total_cores / num_parallel_samples)
+    # This ensures each sample gets a fair share without oversubscription
+    HP_P_CALCULATED=$((TOTAL_CORES / NUM_THREADS))
+    if [ $HP_P_CALCULATED -lt 1 ]; then
+        HP_P_CALCULATED=1
+    fi
+    HP_P_ENV="HP_P=$HP_P_CALCULATED"
+    echo "Setting HP_P=$HP_P_CALCULATED threads per sample (total cores: $TOTAL_CORES, parallel samples: $NUM_THREADS)"
+else
+    HP_P_ENV="HP_P=$HP_P"
+    echo "Using user-specified HP_P=$HP_P threads per sample"
+fi
+
 # Run the container with parallel processing
 echo "Executing MitoHPC container..."
 apptainer exec \
     --bind "$WORKING_DIR":"$WORKING_DIR" \
     --pwd "$WORKING_DIR" \
-    --env HP_ADIR="$DATA_DIR",HP_ODIR=out,HP_IN=in.txt \
+    --env HP_ADIR="$DATA_DIR",HP_ODIR=out,HP_IN=in.txt,"$HP_P_ENV" \
     "$CONTAINER_IMAGE" \
     ./run_parallel_mitohpc.sh "$NUM_THREADS"
 

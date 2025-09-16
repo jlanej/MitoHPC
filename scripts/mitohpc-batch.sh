@@ -117,12 +117,31 @@ process_sample() {
         return 1
     fi
     
+    # Calculate appropriate HP_P value to prevent resource conflicts
+    # Each sample should get a fair share of CPU cores
+    local total_cores=$(nproc 2>/dev/null || echo 4)
+    local hp_p_env=""
+    if [ -z "$HP_P" ]; then
+        # Estimate number of parallel jobs from the parent process
+        # This is an approximation since we don't have direct access to the parallel job count
+        local estimated_parallel_jobs=${NUM_JOBS:-4}
+        local hp_p_calculated=$((total_cores / estimated_parallel_jobs))
+        if [ $hp_p_calculated -lt 1 ]; then
+            hp_p_calculated=1
+        fi
+        hp_p_env="HP_P=$hp_p_calculated"
+        log "Setting HP_P=$hp_p_calculated for sample $sample_name"
+    else
+        hp_p_env="HP_P=$HP_P"
+        log "Using user-specified HP_P=$HP_P for sample $sample_name"
+    fi
+    
     # Run MitoHPC in container
     local cmd="apptainer exec \
         --bind \"$sample_dir\":\"$sample_dir\" \
         --bind \"$sample_output\":\"$sample_output\" \
         --pwd \"$sample_dir\" \
-        --env HP_ADIR=\"$data_dir\",HP_ODIR=\"$sample_output/out\",HP_IN=\"$input_file\" \
+        --env HP_ADIR=\"$data_dir\",HP_ODIR=\"$sample_output/out\",HP_IN=\"$input_file\",$hp_p_env \
         \"$container_image\" \
         mitohpc.sh"
     
@@ -174,7 +193,7 @@ run_batch() {
     
     # Export function for parallel execution
     export -f process_sample log
-    export VERBOSE DRY_RUN
+    export VERBOSE DRY_RUN NUM_JOBS="$num_jobs"
     
     # Use GNU parallel or xargs for parallel processing
     if command -v parallel > /dev/null 2>&1; then

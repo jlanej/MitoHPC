@@ -142,15 +142,48 @@ mitohpc-batch.sh -d /data/samples -j 2 -v
 
 ## Advanced Usage
 
-### Custom Resource Allocation
+### Thread Management and HP_P
 
-You can still use the traditional HP_P environment variable for per-sample thread allocation:
+The batch processing scripts automatically manage thread allocation to prevent resource conflicts:
 
 ```bash
-# Each sample uses 2 cores, and we run 2 samples in parallel (total: 4 cores)
-export HP_P=2
-mitohpc-batch-container.sh /data/project1 2
+# The scripts automatically calculate HP_P based on available cores and parallel jobs
+# For example, with 16 cores and 4 parallel samples:
+# HP_P will be set to 4 (16 cores / 4 samples = 4 threads per sample)
+
+mitohpc-batch-container.sh /data/project1 4  # Each sample gets 4 threads
+
+# You can override HP_P if needed:
+export HP_P=2  # Force each sample to use only 2 threads
+mitohpc-batch-container.sh /data/project1 4  # Each sample uses 2 threads (total: 8 threads)
 ```
+
+### Custom Resource Allocation
+
+Advanced thread configuration examples:
+
+```bash
+# Example 1: High parallelism with limited per-sample threads
+export HP_P=1
+mitohpc-batch-container.sh /data/project1 8  # 8 samples in parallel, 1 thread each
+
+# Example 2: Low parallelism with high per-sample threads  
+export HP_P=8
+mitohpc-batch-container.sh /data/project1 2  # 2 samples in parallel, 8 threads each
+
+# Example 3: Let the script auto-calculate (recommended)
+unset HP_P
+mitohpc-batch-container.sh /data/project1 4  # Automatic HP_P calculation
+```
+
+### Resource Usage Guidelines
+
+| System Cores | Recommended Parallel Samples | Auto HP_P | Total Threads |
+|--------------|------------------------------|-----------|---------------|
+| 4 cores      | 2-4 samples                  | 1-2       | 4             |
+| 8 cores      | 4-8 samples                  | 1-2       | 8             |
+| 16 cores     | 4-8 samples                  | 2-4       | 16            |
+| 32 cores     | 8-16 samples                 | 2-4       | 32            |
 
 ### Integration with Job Schedulers
 

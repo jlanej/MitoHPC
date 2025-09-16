@@ -50,6 +50,21 @@ fi
 # Source init.sh to get all HP_ variables
 . $HP_SDIR/init.sh
 
+echo "MitoHPC parallel configuration:"
+echo "  Per-sample threads (HP_P): $HP_P"
+echo "  Parallel sample processing threads: $NUM_THREADS"
+echo "  Total potential thread usage: $((HP_P * NUM_THREADS))"
+
+# If total thread usage seems excessive, warn the user
+TOTAL_CORES=$(nproc 2>/dev/null || echo 4)
+POTENTIAL_THREADS=$((HP_P * NUM_THREADS))
+if [ $POTENTIAL_THREADS -gt $((TOTAL_CORES * 2)) ]; then
+    echo "Warning: Potential thread oversubscription detected!"
+    echo "  Available cores: $TOTAL_CORES"
+    echo "  Potential threads: $POTENTIAL_THREADS"
+    echo "  Consider reducing NUM_THREADS or setting HP_P to a lower value"
+fi
+
 # Generate input file if it doesn't exist
 if [ ! -s "$HP_IN" ]; then
     echo "Generating input file: $HP_IN"

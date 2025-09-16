@@ -152,11 +152,18 @@ https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9112767/
     # Option 3: Parallel processing within container (for advanced users)
     $ apptainer exec [bind/env options] "docker://ghcr.io/jlanej/mitohpc:main" mitohpc-parallel.sh 4
     
+    # Thread Management:
+    # The batch scripts automatically manage HP_P (threads per sample) to prevent resource conflicts:
+    # - If you don't set HP_P: HP_P = max(1, total_cores / parallel_samples)
+    # - If you set HP_P: your value is used (be careful not to oversubscribe)
+    # Example: 16 cores, 4 parallel samples → HP_P=4 per sample (total: 16 threads)
+    
     # Benefits of batch processing:
     # - Process multiple samples simultaneously across CPU cores
     # - Automatic load balancing and progress tracking
     # - Better resource utilization for large datasets
     # - Maintains all original MitoHPC functionality
+    # - Intelligent thread management prevents resource conflicts
 
 ## DOCKERHUB IMAGE  ##
 
