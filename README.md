@@ -134,6 +134,30 @@ https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9112767/
     # HP_MM - Per-thread memory for samtools sort: 2G (safe allocation per thread)
     # This prevents memory conflicts where samtools sort could over-allocate memory
 
+### BATCH PROCESSING ###
+
+    # For processing multiple samples in parallel across threads, use the batch processing scripts:
+    
+    # Option 1: Easy container-based batch processing (recommended)
+    $ mitohpc-batch-container.sh /path/to/data 4 "docker://ghcr.io/jlanej/mitohpc:main"
+    
+    # This replaces your original command:
+    # apptainer exec --bind "$groupCram":"$groupCram" --pwd "$groupCram" \
+    #   --env HP_ADIR=bams,HP_ODIR=out,HP_IN=in.txt \
+    #   "docker://ghcr.io/jlanej/mitohpc:main" mitohpc.sh
+    
+    # Option 2: Batch processing multiple sample directories
+    $ mitohpc-batch.sh -d /base/directory -j 4 -c "docker://ghcr.io/jlanej/mitohpc:main"
+    
+    # Option 3: Parallel processing within container (for advanced users)
+    $ apptainer exec [bind/env options] "docker://ghcr.io/jlanej/mitohpc:main" mitohpc-parallel.sh 4
+    
+    # Benefits of batch processing:
+    # - Process multiple samples simultaneously across CPU cores
+    # - Automatic load balancing and progress tracking
+    # - Better resource utilization for large datasets
+    # - Maintains all original MitoHPC functionality
+
 ## DOCKERHUB IMAGE  ##
 
     # available at
