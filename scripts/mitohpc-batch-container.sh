@@ -97,20 +97,20 @@ if [ ! -d "$WORKING_DIR/bams" ] && [ ! -d "$WORKING_DIR/crams" ]; then
 fi
 
 # Determine data directory
-DATA_DIR=""
-if [ -d "$WORKING_DIR/bams" ]; then
-    DATA_DIR="bams"
-    if ! find "$WORKING_DIR/bams" -name "*.bam" | head -1 | grep -q .; then
-        echo "Error: No BAM files found in $WORKING_DIR/bams" >&2
-        exit 1
-    fi
-elif [ -d "$WORKING_DIR/crams" ]; then
-    DATA_DIR="crams"
-    if ! find "$WORKING_DIR/crams" -name "*.cram" | head -1 | grep -q .; then
-        echo "Error: No CRAM files found in $WORKING_DIR/crams" >&2
-        exit 1
-    fi
-fi
+DATA_DIR="bams"
+# if [ -d "$WORKING_DIR/bams" ]; then
+#     DATA_DIR="bams"
+#     if ! find "$WORKING_DIR/bams" -name "*.bam" | head -1 | grep -q .; then
+#         echo "Error: No BAM files found in $WORKING_DIR/bams" >&2
+#         exit 1
+#     fi
+# elif [ -d "$WORKING_DIR/crams" ]; then
+#     DATA_DIR="crams"
+#     if ! find "$WORKING_DIR/crams" -name "*.cram" | head -1 | grep -q .; then
+#         echo "Error: No CRAM files found in $WORKING_DIR/crams" >&2
+#         exit 1
+#     fi
+# fi
 
 echo "MitoHPC Batch Container Processing"
 echo "=================================="
