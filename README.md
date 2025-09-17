@@ -304,6 +304,10 @@ https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9112767/
       sample_B          bams/sample_B.bam    out/sample_B/sample_B
       sample_C          bams/sample_C.bam    out/sample_C/sample_C
 
+    Note: Sample names are automatically extracted from BAM/CRAM headers (@RG SM field) 
+    rather than derived from filenames. This ensures consistency between alignment 
+    metadata and pipeline output.
+
 ### OUTPUT ###
 
 #### output directories : 1/sample ####
