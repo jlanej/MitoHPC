@@ -164,6 +164,14 @@ https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9112767/
     # - Better resource utilization for large datasets
     # - Maintains all original MitoHPC functionality
     # - Intelligent thread management prevents resource conflicts
+    # - Produces identical output files as sequential processing
+    
+    # Output Equivalence:
+    # The parallel processing scripts (mitohpc-parallel.sh, mitohpc-batch-*.sh) produce
+    # identical merged VCF files (e.g., mutect2.mutect2.10.merge.vcf) as sequential processing.
+    # This is because sample outputs are concatenated in HP_IN order regardless of processing order,
+    # then sorted by genomic coordinates before generating merged VCFs.
+    # See VCF_OUTPUT_EQUIVALENCE_ANALYSIS.md for detailed analysis.
 
 ## DOCKERHUB IMAGE  ##
 
