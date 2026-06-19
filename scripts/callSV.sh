@@ -3,15 +3,16 @@ set -eu
 #########################################################################################
 # Standalone mitochondrial structural-variant (deletion) caller for MitoHPC.
 #
-# Consumes the circular-aware chrM alignment ($O.bam) and writes ONLY new files:
+# Thin driver around scripts/callsv.py (Python3 + pysam), which reads the circular-aware
+# chrM alignment ($O.bam) in-process and writes ONLY new files:
 #     $O.sv.vcf   per-sample deletion calls (VCFv4.2, SVTYPE=DEL)
 #     $O.sv.tab   flat table
 # It never reads-for-write or deletes any existing deliverable. Default-off: it is only
-# invoked when HP_SV is set (see filter.sh). See docs/SV_CALLING.md.
+# invoked when HP_SV=callsv (see filter.sh). See docs/SV_METHODS.md.
 #
-# Method (v1): split-read junctions (sa2del.pl) corroborated by a coverage drop
-# (svCall.pl). A deletion is PASS only when both signals agree. Two heteroplasmy
-# estimates (junction fraction + coverage ratio) plus a disagreement QC field.
+# Method (v1): split-read junctions (SA:Z tags) corroborated by a coverage drop. A
+# deletion is PASS only when both signals agree. Two heteroplasmy estimates (junction
+# fraction AFJ + coverage ratio AFC) plus a disagreement QC field (AFDIFF).
 #
 # Args:  1: sample name   2: BAM (circular-aware chrM)   3: output prefix
 #########################################################################################
@@ -24,7 +25,7 @@ SDIR=${HP_SDIR:-$(cd "$(dirname "$0")" && pwd)}
 RDIR=${HP_RDIR:-$(cd "$SDIR/../RefSeq" && pwd)}
 MT=${HP_MT:-chrM}
 MTLEN=${HP_MTLEN:-16569}
-P=${HP_P:-1}
+PY=${HP_PYTHON:-python3}            # override to point at a python that has pysam
 
 # tunables (defaults chosen for ~2000x subsampled chrM; override via init.sh)
 MINMAPQ=${HP_SV_MINMAPQ:-20}    # min MAPQ for split reads (drops NUMT multi-mappers)
@@ -39,29 +40,17 @@ MINDP=${HP_SV_MINDP:-0}         # min flank depth for PASS (0 => disabled)
 test -s "$BAM"
 test -s "$RDIR/$MT.fa"
 
-# masks (optional; flags only)
-HP_BED=$RDIR/HP.bed.gz
-NUMT_VCF=$RDIR/NUMT.vcf.gz
-DLOOP_BED=$RDIR/DLOOP.bed.gz
+# optional false-positive masks (flags only)
 maskopt=""
-[ -s "$HP_BED" ]    && maskopt="$maskopt -hp $HP_BED"
-[ -s "$NUMT_VCF" ]  && maskopt="$maskopt -numt $NUMT_VCF"
-[ -s "$DLOOP_BED" ] && maskopt="$maskopt -dloop $DLOOP_BED"
+[ -s "$RDIR/HP.bed.gz" ]    && maskopt="$maskopt --hp $RDIR/HP.bed.gz"
+[ -s "$RDIR/NUMT.vcf.gz" ]  && maskopt="$maskopt --numt $RDIR/NUMT.vcf.gz"
+[ -s "$RDIR/DLOOP.bed.gz" ] && maskopt="$maskopt --dloop $RDIR/DLOOP.bed.gz"
 
-DP=$O.sv.dp
-# per-base depth over chrM (self-contained; equivalent to $O.cvg)
-samtools depth -a -r "$MT" -@ "$P" "$BAM" > "$DP"
+"$PY" "$SDIR/callsv.py" \
+  --bam "$BAM" --ref "$RDIR/$MT.fa" --header "$SDIR/sv.vcf" --sample "$S" \
+  --out "$O.sv.vcf" --tab "$O.sv.tab" \
+  --chrom "$MT" --mtlen "$MTLEN" --minmapq "$MINMAPQ" --minjr "$MINJR" \
+  --minsize "$MINSIZE" --maxsize "$MAXSIZE" --pad "$PAD" --drop "$DROP" \
+  --flank "$FLANK" --mindepth "$MINDP" $maskopt
 
-# split-read deletion junctions (clustered)
-samtools view -h -q "$MINMAPQ" -@ "$P" "$BAM" | \
-  "$SDIR/sa2del.pl" -chrM "$MT" -mtlen "$MTLEN" -minsize "$MINSIZE" \
-                    -maxsize "$MAXSIZE" -pad "$PAD" -minsupport 2 > "$O.sv.jun"
-
-# corroborate with coverage, flag, format (sa2del.pl already emits clusters sorted by bp5=POS)
-cat "$SDIR/sv.vcf" | sed "s|^#CHROM|##sample=$S\n#CHROM|" > "$O.sv.vcf"
-"$SDIR/svCall.pl" -sample "$S" -ref "$RDIR/$MT.fa" -cvg "$DP" -mtlen "$MTLEN" \
-                  -flank "$FLANK" -minjr "$MINJR" -drop "$DROP" -mindepth "$MINDP" \
-                  -pad "$PAD" -tab "$O.sv.tab" $maskopt < "$O.sv.jun" >> "$O.sv.vcf"
-
-rm -f "$DP" "$O.sv.jun"
 echo "[callSV] $S -> $O.sv.vcf ($(grep -vc '^#' "$O.sv.vcf") records)" >&2

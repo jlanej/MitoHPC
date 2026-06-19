@@ -29,8 +29,13 @@ within tolerance and which trips the `REPEAT` flag.
 
 ## Run the test
 
+Needs `python3` with `pysam` (the caller `scripts/callsv.py` does everything in-process — no
+`samtools` needed here). Point `HP_PYTHON` at an interpreter that has `pysam` if your default
+`python3` doesn't:
+
 ```bash
-bash test/sv/run_test.sh          # -> "ALL TESTS PASSED"
+bash test/sv/run_test.sh                                   # -> "ALL TESTS PASSED"
+HP_PYTHON=/path/to/venv/bin/python bash test/sv/run_test.sh   # if pysam is in a venv
 ```
 
 ## Regenerate the BAMs (optional)

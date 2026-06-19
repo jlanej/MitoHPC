@@ -1,7 +1,7 @@
 # MitoHPC mtDNA Deletion Calling — Method (as implemented)
 
 **Status:** v1 (single large-scale deletions) · default **off** (`HP_SV`) · purely additive
-**Applies to code:** `scripts/{callSV.sh, sa2del.pl, svCall.pl, sv.vcf, getSVSummary.sh}`
+**Applies to code:** `scripts/{callsv.py, callSV.sh, sv.vcf, getSVSummary.sh}` (core in Python 3 + `pysam`)
 **Companion docs:** design/literature → [`SV_CALLING.md`](SV_CALLING.md) · guardrails → [`../CLAUDE.md`](../CLAUDE.md)
 
 > ⚠️ **Maintenance contract:** this document describes the code *as it actually runs*. If you
@@ -40,7 +40,9 @@ fraction and from the coverage ratio — and their disagreement is reported as a
 deletion is **PASS** only when a clustered split junction *and* a coverage drop coincide.
 
 This is the standard split-read + read-depth corroboration principle (cf. DELLY/LUMPY), specialized
-to the small circular mitochondrial genome and built entirely from `samtools`/`bedtools`/`perl`.
+to the small circular mitochondrial genome and implemented in **Python 3 with `pysam`** (the
+de-facto htslib binding — the same C library behind `samtools`), so the BAM is parsed in-process
+with no Perl and no subprocess shelling.
 
 ---
 
@@ -71,42 +73,41 @@ aggregation lives in a separate `getSVSummary.sh`, gated on `HP_SV`.
 
 ---
 
-## 3. Pipeline (`callSV.sh`)
+## 3. Pipeline (`callSV.sh` → `callsv.py`)
 
-`callSV.sh $S $BAM $O` runs three steps; all parameters come from `HP_SV_*` env vars (defaults in
-brackets, set in `init.sh`):
+`callSV.sh $S $BAM $O` is a thin bash driver: it resolves the `HP_SV_*` thresholds (defaults in
+brackets, set in `init.sh`) and the `RefSeq` mask paths, then runs the Python caller once:
 
 ```
-              ┌──────────────────────────── per-base depth ────────────────────────────┐
-$O.bam ──▶ samtools depth -a -r chrM ─────────────────────────────────────▶ $O.sv.dp   │
-   │                                                                                    │
-   └─▶ samtools view -h -q HP_SV_MINMAPQ[20] ─▶ sa2del.pl ─▶ clustered junctions ($O.sv.jun)
-                                                   │                                    │
-                                                   ▼                                    ▼
-                                              svCall.pl  ◀───── reads depth ($O.sv.dp), ref, masks
-                                                   │
-                                                   ├─▶ $O.sv.vcf   (header = scripts/sv.vcf + records)
-                                                   └─▶ $O.sv.tab
+callSV.sh ──▶ $HP_PYTHON(=python3) scripts/callsv.py --bam $O.bam --ref chrM.fa
+                                                      --header scripts/sv.vcf --sample $S
+                                                      --out $O.sv.vcf --tab $O.sv.tab [knobs/masks]
+                         │
+   ┌─────────────────────┴───────────────── all in one pysam pass ───────────────────────┐
+   │ extract_junctions(): iterate $O.bam (MAPQ≥20), SA:Z split reads → clustered junctions │
+   │ per_base_depth():    pysam count_coverage(quality_threshold=0) ≡ `samtools depth -a`  │
+   │ call():              corroborate + heteroplasmy + flags → $O.sv.vcf + $O.sv.tab       │
+   └──────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-`$O.sv.dp` and `$O.sv.jun` are temporary and removed at the end. (The depth is recomputed here for
-self-containment; it is numerically equivalent to the pipeline's `$O.cvg`.)
+There are **no temp files and no subprocesses** — `pysam` reads the BAM, computes depth, and reads
+the reference/masks in-process. The single dependency is `pysam` (installed in the image via a
+pinned pip manylinux wheel that bundles htslib; see §12). `callsv.py` runs on Python 3.8+ and is
+parity-tested against the original Perl implementation (field-for-field identical on the mock BAMs).
 
 ---
 
-## 4. Stage A — split-read junctions (`sa2del.pl`)
+## 4. Stage A — split-read junctions (`callsv.py: extract_junctions`)
 
-**Input:** SAM stream (`samtools view -h -q HP_SV_MINMAPQ`). **Output:** one clustered junction per
-line: `#CHROM bp5 bp3 SVLEN JR strand`.
+Iterates `$O.bam` via `pysam.AlignmentFile.fetch(chrom)` and returns clustered junctions
+`(bp5, bp3, SVLEN, JR, strand)`.
 
 ### 4.1 Which reads are used
 For each alignment record, keep it only if it is a **primary** alignment carrying an `SA:Z:` tag:
-- skip `0x4` (unmapped), `0x100` (secondary), `0x800` (supplementary);
-- require a `SA:Z:` tag (the supplementary mate was dropped upstream by `-F 0x90C`, but the tag
-  remains on the primary — this is exactly the `$O.bam` representation).
-
-The MAPQ filter (`-q HP_SV_MINMAPQ`, default **20**) is applied by `samtools view` before
-`sa2del.pl` and is the first NUMT/multimapper guard.
+- skip `is_unmapped` (`0x4`), `is_secondary` (`0x100`), `is_supplementary` (`0x800`);
+- require `read.mapping_quality ≥ HP_SV_MINMAPQ` (default **20**) — the first NUMT/multimapper guard;
+- require `read.has_tag("SA")` (the supplementary mate was dropped upstream by `-F 0x90C`, but the
+  tag remains on the primary — this is exactly the `$O.bam` representation).
 
 ### 4.2 Junction definition
 Two segments are reconstructed: the **primary** (from its `POS`+`CIGAR`) and the **first `SA`
@@ -146,11 +147,13 @@ Clusters with `JR < 2` are dropped here (`-minsupport 2`); the PASS threshold `H
 
 ---
 
-## 5. Stage B — coverage corroboration, heteroplasmy, flags (`svCall.pl`)
+## 5. Stage B — coverage corroboration, heteroplasmy, flags (`callsv.py: call`)
 
-**Input:** clustered junctions (stdin) + per-base depth (`-cvg`) + reference (`-ref`) + masks.
-Loads depth into a 1-based array `dep[1..mtlen]`; all position windows **wrap modulo mtlen** so the
-circular origin is handled.
+**Input:** clustered junctions + per-base depth + reference (`--ref`) + masks. Depth comes from
+`pysam.AlignmentFile.count_coverage(chrom, 0, mtlen, quality_threshold=0)` summed over A/C/G/T into
+a 1-based array `dep[1..mtlen]`; with the default `read_callback="all"` (skips unmapped/secondary/
+QC-fail/dup) this matches `samtools depth -a` (verified field-for-field on the mock BAMs). All
+position windows **wrap modulo mtlen** so the circular origin is handled.
 
 ### 5.1 Coverage statistics (per junction)
 ```
@@ -248,7 +251,7 @@ The module inherits circular correctness from the existing pipeline rather than 
 - `$O.bam` was produced by `circSam.pl` from reads aligned to the **circularized** reference
   `chrMC` (`HP_E=300` bp appended), so a read crossing the artificial origin already has its parts
   wrapped into 1..16569.
-- In `svCall.pl`, every coverage window wraps modulo `mtlen`, so flanks straddling 16569/1 are
+- In `callsv.py`, every coverage window wraps modulo `mtlen`, so flanks straddling 16569/1 are
   computed correctly.
 - v1 **does not** disambiguate a circular deletion from its complementary-arc duplication; junctions
   at the origin are flagged `WRAP` and kept out of PASS (deferred to a future tier — see roadmap in
@@ -263,8 +266,8 @@ A read drawn across the deletion junction in a mutant molecule aligns to wild-ty
 primary:  POS 8345  CIGAR 138M12S       (left arm, ends at 8482)
 SA tag:   chrM,13447,+,125S25M          (right arm, starts at 13447)   ← 13 bp arm overlap = repeat
 ```
-→ `sa2del.pl`: `bp5=8482, bp3=13447, SVLEN=4964`. With 133 such reads clustered: `JR=133`.
-→ `svCall.pl`: `medFlank≈566`, `medInside≈422` ⇒ `CVGR=0.746`; `AFC=0.254`; `span≈501`,
+→ `extract_junctions`: `bp5=8482, bp3=13447, SVLEN=4964`. With 133 such reads clustered: `JR=133`.
+→ `call`: `medFlank≈566`, `medInside≈422` ⇒ `CVGR=0.746`; `AFC=0.254`; `span≈501`,
    `SR≈368`, `AFJ=0.265`. `CVGR 0.746 ≤ 0.9` and `JR 133 ≥ 3` ⇒ **PASS**; breakpoints in the
    repeat ⇒ `REPEAT`. The two heteroplasmy estimates agree (`AFDIFF=0.011`) and bracket the true
    0.30. (Conventionally the common deletion is "4977 bp"; split reads report 4964 because the
@@ -325,15 +328,30 @@ export HP_SV=callsv          # (optionally override HP_SV_* thresholds)
 then run normally (`run.sh > run.all.sh; bash run.all.sh`). Produces `$O.sv.vcf`/`$O.sv.tab` per
 sample and `$ODIR/sv.concat.vcf`/`$ODIR/sv.tab` for the cohort.
 
-**Standalone** on any chrM BAM:
+**Standalone** on any chrM BAM (needs `python3` with `pysam`):
 ```bash
 HP_SDIR=scripts scripts/callSV.sh SAMPLE path/to.bam out/SAMPLE
+# point at a specific interpreter if needed:
+HP_SDIR=scripts HP_PYTHON=/path/to/venv/bin/python scripts/callSV.sh SAMPLE path/to.bam out/SAMPLE
 ```
+
+**Dependency / Docker:** the only new dependency is `pysam` (Python), installed in the image by
+`install_sysprerequisites.sh` (`pip install pysam==0.24.0`, a manylinux wheel that bundles htslib —
+no compiler needed) and checked by `checkInstall.sh`. CI installs it via `actions/setup-python` +
+pip (`.github/workflows/sv-test.yml`) and also exercises it inside the built image
+(`docker-publish.yml`). `samtools`/`bedtools` remain installed for the rest of the pipeline but the
+SV caller no longer shells out to them.
 
 ---
 
 ## Changelog
 
-- **v1 (initial):** single large-scale deletion caller — `SA:Z:` split-read clustering
-  (`sa2del.pl`) + coverage-drop corroboration and dual heteroplasmy estimates (`svCall.pl`),
+- **v1.1 (Python/pysam port):** reimplemented the two Perl cores (`sa2del.pl`, `svCall.pl`) as a
+  single Python 3 + `pysam` module `scripts/callsv.py`; `callSV.sh` is now a thin driver
+  (`HP_PYTHON` override). BAM iteration, SA/CIGAR parsing, and per-base depth (`count_coverage`,
+  `quality_threshold=0`) run in-process — no Perl, no `samtools`/temp-file shelling in the SV path.
+  **Field-for-field parity** with the Perl v1 verified on the mock BAMs; algorithm, thresholds, and
+  output schema unchanged. `pysam` added to the Docker image + CI.
+- **v1 (initial):** single large-scale deletion caller — `SA:Z:` split-read clustering +
+  coverage-drop corroboration and dual heteroplasmy estimates (originally `sa2del.pl`/`svCall.pl`),
   additive `HP_SV` wiring, cohort `getSVSummary.sh`, and the `test/sv/` mock-data harness.

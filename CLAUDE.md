@@ -176,8 +176,10 @@ When implementing, honor these rules (they operationalize §0):
 6. **Quantify heteroplasmy explicitly** and document the formula in the VCF header
    (e.g. `AF = junction_reads / (junction_reads + spanning_reads)`, and/or a coverage-ratio
    estimate) so the number is interpretable and reproducible.
-7. **No new heavy dependencies for v1** unless justified; the existing toolbox
-   (samtools, bedtools, bcftools, perl, awk) is sufficient for a split-read + coverage caller.
+7. **Keep dependencies light and best-fit.** The SV caller uses **Python 3 + `pysam`** (the one
+   added dependency — a pip manylinux wheel that bundles htslib; no compiler, installed in Docker).
+   Language is chosen for fit, not repo tradition: `pysam` gives robust in-process BAM/CIGAR/SA/depth
+   handling. `samtools`/`bedtools`/`bcftools` remain for the rest of the pipeline.
 
 ---
 
@@ -186,19 +188,21 @@ When implementing, honor these rules (they operationalize §0):
 - Design & literature: **`docs/SV_CALLING.md`** (state-of-the-art review, tool comparison,
   algorithm primitives, and the phased implementation plan for MitoHPC).
 - Method as implemented (keep in sync with the code): **`docs/SV_METHODS.md`** — intuitive but
-  precise description of `callSV.sh`/`sa2del.pl`/`svCall.pl`, formulas, schema, parameters.
+  precise description of `callsv.py`/`callSV.sh`, formulas, schema, parameters.
 - Existing pipeline outputs/legend: `README.md` (the `## OUTPUT ##` section is the list of frozen
   deliverables).
 - Test fixtures: `examples1/`, `examples2/`.
 
 ### SV module (v1 — implemented, default off via `HP_SV`)
 
-- `scripts/callSV.sh` — per-sample driver; consumes the live `$O.bam`, writes only `$O.sv.vcf` +
-  `$O.sv.tab`. Invoked by the gated block in `filter.sh` (after the GRIDSS block, before the BAM
-  `rm`).
-- `scripts/sa2del.pl` — split-read deletion-junction extraction + clustering from `SA:Z:` tags.
-- `scripts/svCall.pl` — coverage corroboration, two heteroplasmy estimates (AFJ/AFC) + AFDIFF QC,
-  FP flags (REPEAT/NUMT/HP/DLOOP/WRAP), PASS/FILTER logic, VCF+tab formatting.
+- `scripts/callsv.py` — **the caller** (Python 3 + `pysam`): split-read junction extraction +
+  clustering from `SA:Z:` tags, in-process per-base depth (`count_coverage`), coverage
+  corroboration, two heteroplasmy estimates (AFJ/AFC) + AFDIFF QC, FP flags
+  (REPEAT/NUMT/HP/DLOOP/WRAP), PASS/FILTER logic, VCF+tab. Replaces the former perl
+  `sa2del.pl`/`svCall.pl` (field-for-field parity verified).
+- `scripts/callSV.sh` — thin per-sample driver; resolves `HP_SV_*` thresholds + masks and runs
+  `$HP_PYTHON(=python3) callsv.py` on the live `$O.bam`, writing only `$O.sv.vcf` + `$O.sv.tab`.
+  Invoked by the gated block in `filter.sh` (after the GRIDSS block, before the BAM `rm`).
 - `scripts/sv.vcf` — VCF header template (mirrors `gridss.vcf`).
 - `scripts/getSVSummary.sh` — cohort aggregator (`$ODIR/sv.concat.vcf`, `$ODIR/sv.tab`); SEPARATE
   from `getSummary.sh`, gated on `HP_SV`.
@@ -209,7 +213,8 @@ When implementing, honor these rules (they operationalize §0):
 
 ## 6. Conventions
 
-- Scripts live in `scripts/`; perl helpers are `*.pl`, shell stages are `*.sh`. Match existing
+- Scripts live in `scripts/`; shell stages are `*.sh`, legacy helpers are `*.pl` (perl), newer
+  logic is Python 3 (`*.py`, e.g. the SV caller `callsv.py`). Use the best-fit language. Match existing
   naming (`fix*Vcf.pl`, `*2*.pl`, `filter*.sh`) and the env-var-driven style.
 - Keep edits surgical and reversible. When in doubt about whether something is a frozen
   deliverable, treat it as frozen and ask.

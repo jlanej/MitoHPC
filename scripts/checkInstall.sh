@@ -24,6 +24,7 @@ which bcftools
 which tabix
 which freebayes
 which minimap2
+python3 -c "import pysam; print('pysam', pysam.__version__)"   #SV module (scripts/callsv.py)
 
 test -f $HP_JDIR/gatk.jar
 test -f $HP_JDIR/mutserve.jar

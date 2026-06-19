@@ -209,7 +209,7 @@ differ in **where the split-read signal comes from** and **how much they depend 
 | Split signal | Existing `$O.sa.bed` (SA tags only) | **MAPQ-filtered, recomputed from live `$O.bam`** (+ soft-clip capable) | eKLIPse soft-clip; `$O.sa.bed` fallback |
 | Coverage corroboration | Yes (optional → promote to mandatory) | Yes (mandatory AND-gate) | Yes (corroborating) |
 | Heteroplasmy | Junction + coverage | **Junction + coverage + disagreement QC** | Junction + coverage |
-| Dependencies | None (perl/awk/samtools/bedtools) | None | **eKLIPse (Python 2.7 EOL) — real packaging debt** |
+| Dependencies | One (`pysam`; pip manylinux wheel) | One (`pysam`) | **eKLIPse (Python 2.7 EOL) — real packaging debt** |
 | Recall ceiling | **Bounded by SA tags** (no soft-clip-only junctions) | Higher (MAPQ filter + soft-clip option) | High (eKLIPse) but fragile |
 | Simplicity (panel score) | **9** | 7–8 | 6 |
 | Defensibility (panel score) | 7 | **8** | 7 |
@@ -226,9 +226,10 @@ dependency).
 
 ## 9. Recommended v1 — `callSV` (blended, deletion-only, dual-signal)
 
-> **Status: implemented.** Scripts `callSV.sh`, `sa2del.pl`, `svCall.pl`, `sv.vcf`,
-> `getSVSummary.sh`; wired via `HP_SV` (default off). The as-built method (formulas, schema,
-> parameters) is documented in **[`SV_METHODS.md`](SV_METHODS.md)**. Evaluated on committed mock BAMs in
+> **Status: implemented.** Core caller `callsv.py` (Python 3 + `pysam`) with a thin `callSV.sh`
+> driver, plus `sv.vcf` header and `getSVSummary.sh`; wired via `HP_SV` (default off). `pysam` is
+> installed in the Docker image and CI. The as-built method (formulas, schema, parameters) is
+> documented in **[`SV_METHODS.md`](SV_METHODS.md)**. Evaluated on committed mock BAMs in
 > `test/sv/` — `bash test/sv/run_test.sh` recovers the common deletion at 30% (PASS, `REPEAT`
 > flag), the same deletion at 5% (detected in the split-only `no_cvg_drop` tier), a non-repeat
 > deletion at 50% (PASS, no `REPEAT`), and zero PASS calls on the wild-type negative control —
@@ -299,9 +300,9 @@ coverage-dropout gate already biases toward true deletions).
   line **after** the existing `getSummary.sh` line.
 - **`filter.sh`:** **one** gated block, placed immediately after the GRIDSS block and **before
   `rm -f $O.bam*` (line 232)**: `if [ $HP_SV ] ; then callSV.sh $S $O.bam $O ; fi`. No other edit.
-- **New files:** `scripts/callSV.sh`, the breakpoint extractor (`scripts/sa2del.pl` or reuse/improve
-  `sam2bedSA.pl`), `scripts/cvg2del.pl` (or inline awk), `scripts/sv.vcf` (header, mirrors
-  `gridss.vcf`), `scripts/getSVSummary.sh`.
+- **New files (as built):** `scripts/callsv.py` (Python 3 + `pysam` — junction extraction,
+  in-process depth, corroboration, VCF/tab), `scripts/callSV.sh` (thin driver), `scripts/sv.vcf`
+  (header, mirrors `gridss.vcf`), `scripts/getSVSummary.sh`.
 - **Acceptance:** (1) with `HP_SV` empty, `out/` is **byte-for-byte identical** (diff
   `examples1/`, `examples2/` before/after — wire into CI). (2) the `del4977` junction smoke test
   produces a PASS `DEL` at ~m.8470_13447 with the `REPEAT` flag set.
