@@ -24,7 +24,12 @@ set -e
 # Parse arguments
 WORKING_DIR="$1"
 NUM_THREADS="${2:-$(nproc 2>/dev/null || echo 4)}"
-CONTAINER_IMAGE="${3:-docker://ghcr.io/jlanej/mitohpc:main}"
+CONTAINER_IMAGE="${3:-docker://ghcr.io/jlanej/mitohpc:sv-calling}"
+
+# Structural-variant (large-deletion) calling is ON by default (HP_SV=callsv); it writes
+# additional *.sv.* outputs and never changes the existing deliverables. To disable, set
+# HP_SV to empty in the environment:  HP_SV= mitohpc-batch-container.sh <dir> ...
+SV_MODE="${HP_SV-callsv}"
 
 # Function to show usage
 show_usage() {
@@ -34,10 +39,13 @@ Usage: $0 <working_directory> [num_threads] [container_image]
 Arguments:
     working_directory    Directory containing BAM/CRAM files (equivalent to groupCram)
     num_threads         Number of parallel threads to use (default: auto-detect CPU cores)
-    container_image     Container image to use (default: docker://ghcr.io/jlanej/mitohpc:main)
+    container_image     Container image to use (default: docker://ghcr.io/jlanej/mitohpc:sv-calling)
+
+Structural-variant (large-deletion) calling is ON by default (HP_SV=callsv); it adds
+*.sv.* outputs without changing existing results. Disable with: HP_SV= $0 <dir> ...
 
 Example:
-    $0 /data/samples 4 "docker://ghcr.io/jlanej/mitohpc:main"
+    $0 /data/samples 4 "docker://ghcr.io/jlanej/mitohpc:sv-calling"
 
 This script expects the working directory to contain:
     bams/           - Directory with BAM files, OR
@@ -118,6 +126,7 @@ echo "Working directory: $WORKING_DIR"
 echo "Data directory: $DATA_DIR"
 echo "Number of threads: $NUM_THREADS"
 echo "Container image: $CONTAINER_IMAGE"
+echo "SV calling (HP_SV): ${SV_MODE:-off (disabled)}"
 echo
 
 # Count input files
@@ -139,8 +148,13 @@ set -e
 
 NUM_THREADS="$1"
 
-# Source the MitoHPC initialization
+# Source the MitoHPC initialization.
+# init.sh resets HP_SV to its default, so capture the value passed in via --env first and
+# restore it afterwards — this keeps structural-variant calling enabled for run.sh/filter.sh
+# (the parallel filter.sh jobs below inherit this environment).
+HP_SV_REQ="${HP_SV:-}"
 . $HP_SDIR/init.sh
+export HP_SV="$HP_SV_REQ"
 
 # Generate input file
 echo "Generating input file list..."
@@ -170,9 +184,9 @@ else
     bash filter.commands.sh
 fi
 
-# Run summary
+# Run summary (getSummary.sh, plus getSVSummary.sh when HP_SV is set; "Summary.sh" matches both)
 echo "Generating summary..."
-SUMMARY_CMD=$(grep "getSummary.sh" run.all.sh || echo "")
+SUMMARY_CMD=$(grep "Summary.sh" run.all.sh || echo "")
 if [ -n "$SUMMARY_CMD" ]; then
     eval "$SUMMARY_CMD"
 fi
@@ -206,7 +220,7 @@ echo "Executing MitoHPC container..."
 apptainer exec \
     --bind "$WORKING_DIR":"$WORKING_DIR" \
     --pwd "$WORKING_DIR" \
-    --env HP_ADIR="$DATA_DIR",HP_ODIR=out,HP_IN=in.txt,"$HP_P_ENV" \
+    --env HP_ADIR="$DATA_DIR",HP_ODIR=out,HP_IN=in.txt,"$HP_P_ENV",HP_SV="$SV_MODE" \
     "$CONTAINER_IMAGE" \
     ./run_parallel_mitohpc.sh "$NUM_THREADS"
 
