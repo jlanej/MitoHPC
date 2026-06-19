@@ -260,7 +260,7 @@ Separate from `getSummary.sh` (never touched). bgzip+tabix-indexes each per-samp
   vanilla SVG/JS, no dependencies): a circular mtDNA map + linear genome browser with gene /
   OXPHOS-complex annotation, a per-position deletion-frequency track, VAF-coloured calls, live
   filtering (PASS / VAF / class / common / sample), summary cards, VAF & size histograms, and a
-  recurrence table. Open it in any browser.
+  recurrence table. Follows the system light/dark theme with a manual toggle. Open it in any browser.
 
 (No single mixed-sample concatenated VCF is produced — different sample columns can't share one VCF;
 use the merged matrix or the long table. Exact-match merge can over-split imprecise breakpoints across

@@ -32,7 +32,7 @@ bash "$HP_SDIR/getSVSummary.sh" "$tmp/out" >/dev/null
 
 # strip machine-specific absolute paths -> repo-relative, and normalize the version-stamped
 # ##source line so the committed example is stable across regenerations
-SED="s|$ROOT/|./|g; s|$tmp/|./out/|g; s|^##source=MitoHPC_callsv .*|##source=MitoHPC_callsv (example output)|"
+SED="s|$ROOT/|./|g; s|$tmp/|./out/|g; s|^##source=MitoHPC_callsv .*|##source=MitoHPC_callsv (example output)|; s| --version [^ ]*| --version example|g"
 sani(){ case "$1" in
   *.gz) bgzip -dc "$1" | sed "$SED" | bgzip > "$1.s" && mv "$1.s" "$1" && tabix -f -p vcf "$1";;
   *)    sed "$SED" "$1" > "$1.s" && mv "$1.s" "$1";;

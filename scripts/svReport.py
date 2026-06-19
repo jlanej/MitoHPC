@@ -137,8 +137,9 @@ TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MitoHPC — mtDNA structural-variant cohort report</title>
 <style>
-:root{--bg:#fbfbf9;--surf:#ffffff;--ink:#1d1d1b;--mut:#5f5e5a;--hint:#8a897f;--line:#e6e4dc;--accent:#534ab7}
-@media(prefers-color-scheme:dark){:root{--bg:#16160f;--surf:#201f17;--ink:#ecebe2;--mut:#a8a79b;--hint:#76756b;--line:#34332a;--accent:#afa9ec}}
+:root{--bg:#fbfbf9;--surf:#ffffff;--ink:#1d1d1b;--mut:#56554f;--hint:#84837a;--line:#e3e1d8;--accent:#534ab7}
+:root[data-svtheme=dark]{--bg:#13120c;--surf:#211f16;--ink:#f3f2e9;--mut:#bdbcb0;--hint:#92917f;--line:#403d31;--accent:#bcb6ef}
+@media(prefers-color-scheme:dark){:root:not([data-svtheme=light]){--bg:#13120c;--surf:#211f16;--ink:#f3f2e9;--mut:#bdbcb0;--hint:#92917f;--line:#403d31;--accent:#bcb6ef}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
 .wrap{max-width:1180px;margin:0 auto;padding:28px 22px 60px}
@@ -177,7 +178,10 @@ details{margin:8px 0}summary{cursor:pointer;color:var(--accent);font-size:14px}
 </style></head>
 <body><div class="wrap">
 <h2 class="sr-only">Interactive cohort report of mitochondrial DNA deletions: a circular and linear genome map of where deletions occur, how frequent they are, and their heteroplasmy.</h2>
+<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
 <h1>mtDNA structural-variant cohort report</h1>
+<button id="theme" aria-label="toggle colour theme" style="height:32px;padding:0 12px;border:1px solid var(--line);border-radius:8px;background:var(--surf);color:var(--ink);cursor:pointer;font-size:13px;white-space:nowrap">theme: auto</button>
+</div>
 <p class="sub" id="subtitle"></p>
 
 <div class="cards" id="cards"></div>
@@ -225,6 +229,7 @@ const rnd=(x,d=0)=>{const p=Math.pow(10,d);return Math.round(x*p)/p};
 const pct=x=>rnd(x*100)+'%';
 const SVGNS='http://www.w3.org/2000/svg';
 function el(t,a){const e=document.createElementNS(SVGNS,t);for(const k in(a||{}))e.setAttribute(k,a[k]);return e}
+const accent=()=>getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()||'#534ab7';
 // heteroplasmy colour ramp (light->deep red)
 const RAMP=[[0,'#FDE3AE'],[.33,'#F0997B'],[.66,'#D85A30'],[1,'#A32D2D']];
 function vcol(v){v=Math.max(0,Math.min(1,v));for(let i=1;i<RAMP.length;i++){if(v<=RAMP[i][0]){const[a,ca]=RAMP[i-1],[b,cb]=RAMP[i];return lerp(ca,cb,(v-a)/(b-a||1))}}return RAMP[RAMP.length-1][1]}
@@ -266,7 +271,7 @@ function circle(cs){
     const t=pc(R+26,a),tx=el('text',{x:t[0],y:t[1],fill:'var(--hint)','font-size':10,'text-anchor':'middle','dominant-baseline':'middle'});tx.textContent=(p/1000)+'k';svg.appendChild(tx)}
   // frequency band (calls covering each base) just inside the genes
   const cov=coverage(cs),mx=Math.max(1,...cov);const fr=R-26;
-  for(let p=0;p<MT;p+=40){const v=cov[p]/mx;if(v<=0)continue;svg.appendChild(el('path',{d:arc(fr,p,Math.min(p+40,MT),3+18*v),fill:'#534ab7',opacity:.10+.25*v}))}
+  const AC=accent();for(let p=0;p<MT;p+=40){const v=cov[p]/mx;if(v<=0)continue;svg.appendChild(el('path',{d:arc(fr,p,Math.min(p+40,MT),3+18*v),fill:AC,opacity:.16+.32*v}))}
   // deletion arcs (inner), colour by VAF, ordered by size so big ones sit inside
   const dl=cs.slice().sort((a,b)=>b.len-a.len);let r=fr-30;const step=Math.max(1.6,Math.min(7,(r-70)/Math.max(1,dl.length)));
   dl.forEach(c=>{svg.appendChild(el('path',{d:arc(r,c.bp5,c.end,Math.max(1.4,step*.8)),fill:vcol(c.vaf),opacity:c.pass?.95:.4}));r-=step;if(r<70)r=fr-30});
@@ -288,8 +293,8 @@ function linear(cs){
   // frequency area
   const cov=coverage(cs),mx=Math.max(1,...cov);
   let d='M'+xs(1)+' '+(y+hFreq);for(let p=1;p<=MT;p+=20)d+=' L'+rnd(xs(p),1)+' '+rnd(y+hFreq-cov[p]/mx*hFreq,1);d+=' L'+xs(MT)+' '+(y+hFreq)+' Z';
-  svg.appendChild(el('path',{d,fill:'#534ab7',opacity:.18}));
-  svg.appendChild(el('path',{d:d.replace(' Z','').replace('M'+xs(1)+' '+(y+hFreq),'M'+xs(1)+' '+rnd(y+hFreq-cov[1]/mx*hFreq,1)),fill:'none',stroke:'#534ab7','stroke-width':1.2,opacity:.7}));
+  const AC=accent();svg.appendChild(el('path',{d,fill:AC,opacity:.22}));
+  svg.appendChild(el('path',{d:d.replace(' Z','').replace('M'+xs(1)+' '+(y+hFreq),'M'+xs(1)+' '+rnd(y+hFreq-cov[1]/mx*hFreq,1)),fill:'none',stroke:AC,'stroke-width':1.4,opacity:.85}));
   const yl=el('text',{x:ML,y:y-4,fill:'var(--hint)','font-size':11});yl.textContent='deletions overlapping (max '+mx+')';svg.appendChild(yl);
   y+=hFreq+16;
   // feature track
@@ -320,7 +325,7 @@ function hist(id,vals,bins,fmt,acc){const W=540,H=150,ML=38,MB=26,iw=W-ML-12,ih=
   const mx=Math.max(1,...cnt),bw=iw/bins;
   const svg=el('svg',{viewBox:`0 0 ${W} ${H}`,class:'viz',width:'100%',height:H,role:'img'});
   svg.appendChild(el('title',{})).textContent='histogram';
-  for(let i=0;i<bins;i++){const h=cnt[i]/mx*ih,x=ML+i*bw;svg.appendChild(el('rect',{x:x+1,y:10+ih-h,width:bw-2,height:h,rx:2,fill:'#534ab7',opacity:.8}));}
+  const AC=accent();for(let i=0;i<bins;i++){const h=cnt[i]/mx*ih,x=ML+i*bw;svg.appendChild(el('rect',{x:x+1,y:10+ih-h,width:bw-2,height:h,rx:2,fill:AC,opacity:.85}));}
   svg.appendChild(el('line',{x1:ML,y1:10+ih,x2:W-12,y2:10+ih,stroke:'var(--line)'}));
   for(let i=0;i<=4;i++){const x=ML+i/4*iw;const t=el('text',{x:x,y:H-8,fill:'var(--hint)','font-size':10,'text-anchor':'middle'});t.textContent=fmt(i/4);svg.appendChild(t)}
   const ym=el('text',{x:ML,y:8,fill:'var(--hint)','font-size':10});ym.textContent='n (max '+mx+')';svg.appendChild(ym);
@@ -357,7 +362,12 @@ function ui(){
   document.querySelectorAll('[data-cls]').forEach(b=>b.onchange=e=>{st.cls[e.target.dataset.cls]=e.target.checked;render()});
   $('reset').onclick=()=>{st.pass=true;st.common=false;st.vaf=0;st.smp='';st.cls={I:true,II:true,III:true,'':true};
     $('fpass').checked=true;$('fcommon').checked=false;$('fvaf').value=0;$('fvafv').textContent='0%';$('fsmp').value='';document.querySelectorAll('[data-cls]').forEach(b=>b.checked=true);render()};
-  legend();render();
+  legend();
+  const TH=['auto','light','dark'];let ti=0;
+  try{const s=localStorage.getItem('svtheme');if(s){const i=TH.indexOf(s);if(i>=0)ti=i}}catch(e){}
+  function applyTheme(){const t=TH[ti];if(t==='auto')document.documentElement.removeAttribute('data-svtheme');else document.documentElement.setAttribute('data-svtheme',t);$('theme').textContent='theme: '+t;try{localStorage.setItem('svtheme',t)}catch(e){}render()}
+  $('theme').onclick=()=>{ti=(ti+1)%3;applyTheme()};
+  applyTheme();
 }
 ui();
 </script>

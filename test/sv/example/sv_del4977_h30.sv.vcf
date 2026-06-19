@@ -4,7 +4,7 @@
 ##reference=file://./RefSeq/chrM.fa
 ##contig=<ID=chrM,length=16569,md5=c68f52674c9fb33aef52dcf399755519>
 ##sample=sv_del4977_h30
-##callsv_command="./scripts/callsv.py --bam ./test/sv/bams/sv_del4977_h30.bam --ref ./RefSeq/chrM.fa --header ./scripts/sv.vcf --sample sv_del4977_h30 --out ./out/out/sv_del4977_h30/sv_del4977_h30.sv.vcf --tab ./out/out/sv_del4977_h30/sv_del4977_h30.sv.tab --version efdaf48-dirty --chrom chrM --mtlen 16569 --minmapq 20 --minjr 3 --minsize 50 --maxsize 0 --pad 25 --drop 0.9 --flank 200 --mindepth 0 --hp ./RefSeq/HP.bed.gz --numt ./RefSeq/NUMT.vcf.gz --dloop ./RefSeq/DLOOP.bed.gz --genes ./RefSeq/genes.bed.gz"
+##callsv_command="./scripts/callsv.py --bam ./test/sv/bams/sv_del4977_h30.bam --ref ./RefSeq/chrM.fa --header ./scripts/sv.vcf --sample sv_del4977_h30 --out ./out/out/sv_del4977_h30/sv_del4977_h30.sv.vcf --tab ./out/out/sv_del4977_h30/sv_del4977_h30.sv.tab --version example --chrom chrM --mtlen 16569 --minmapq 20 --minjr 3 --minsize 50 --maxsize 0 --pad 25 --drop 0.9 --flank 200 --mindepth 0 --hp ./RefSeq/HP.bed.gz --numt ./RefSeq/NUMT.vcf.gz --dloop ./RefSeq/DLOOP.bed.gz --genes ./RefSeq/genes.bed.gz"
 ##callsv_param_HP_SV_MINMAPQ=20
 ##callsv_param_HP_SV_MINJR=3
 ##callsv_param_HP_SV_MINSIZE=50
