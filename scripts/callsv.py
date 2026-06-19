@@ -128,14 +128,16 @@ def extract_junctions(bam, chrom, minmapq, minsize, maxsize, pad, minsupport):
             if aend is None:
                 continue
 
-            sa = r.get_tag("SA").split(";")[0]    # first supplementary segment
+            # first SA segment only (by design, matching the original sa2del.pl): a read
+            # with multiple supplementary alignments contributes just its first junction.
+            sa = r.get_tag("SA").split(";")[0]
             s = sa.split(",")
             if len(s) < 4:
                 continue
             sref, spos, sstrand, scig = s[0], s[1], s[2], s[3]
             if sref != chrom or sstrand != strand:   # same contig + same strand => DEL
                 continue
-            if not spos.isdigit():
+            if not spos.isdigit() or scig == "*" or not scig:   # skip degenerate SA (cf. sa2del.pl)
                 continue
             sbeg = int(spos)
             send = sbeg + ref_len_from_cigar(scig) - 1
@@ -177,13 +179,24 @@ def extract_junctions(bam, chrom, minmapq, minsize, maxsize, pad, minsupport):
 
 
 # --------------------------------------------------------------------------- #
-# depth (in-process; matches `samtools depth -a`: skip unmapped/secondary/qcfail/dup)
+# per-base read depth (pysam count_coverage)
 # --------------------------------------------------------------------------- #
 def per_base_depth(bam, chrom, mtlen):
+    """Per-base read depth over `chrom`, as a 1-based array of length mtlen+1.
+
+    count_coverage sums A/C/G/T base counts, so it excludes deletions/ref-skips and (with
+    read_callback="all") skips unmapped/secondary/qcfail/dup reads; quality_threshold=0
+    counts all bases regardless of base quality. On the deduplicated, primary chrM $O.bam
+    this equals `samtools depth -a` (verified field-for-field on the mock BAMs).
+    """
     dep = [0] * (mtlen + 1)  # 1-based
     with pysam.AlignmentFile(bam, "rb") as af:
-        cov = af.count_coverage(chrom, 0, mtlen, quality_threshold=0)
-        a, c, g, t = cov
+        if chrom not in af.references:
+            raise ValueError("contig %r not found in %s" % (chrom, bam))
+        reflen = af.get_reference_length(chrom)
+        if reflen != mtlen:
+            raise ValueError("--mtlen %d != %s length %d in %s" % (mtlen, chrom, reflen, bam))
+        a, c, g, t = af.count_coverage(chrom, 0, mtlen, quality_threshold=0)
         for i in range(mtlen):
             dep[i + 1] = a[i] + c[i] + g[i] + t[i]
     return dep
@@ -266,8 +279,6 @@ def call(args):
         flt = ";".join(fil) if fil else "PASS"
 
         refbase = seq[bp5 - 1].upper() if 1 <= bp5 <= len(seq) else "N"
-        if refbase == "":
-            refbase = "N"
         end = bp3 - 1
         info = ("SM=%s;SVTYPE=DEL;END=%d;SVLEN=%d;JR=%d;SR=%d;AFJ=%.3f;AFC=%.3f;AFDIFF=%.3f;CVGR=%.3f"
                 % (args.sample, end, -svlen, jr, sr, afj, afc, afdiff, ratio))
@@ -320,16 +331,24 @@ def main():
     p.add_argument("--drop", type=float, default=0.9)
     p.add_argument("--flank", type=int, default=200)
     p.add_argument("--mindepth", type=int, default=0)
-    p.add_argument("--originpad", type=int, default=20)
-    p.add_argument("--minsupport", type=int, default=2)
     p.add_argument("--hp")
     p.add_argument("--numt")
     p.add_argument("--dloop")
+    # Fixed v1 constants (callSV.sh does not expose these as HP_SV_*; the canonical defaults
+    # live here, used for standalone/test invocation): cluster floor, origin guard, and the
+    # del4977 13bp direct-repeat windows (m.8470-8482 / 13447-13459).
+    p.add_argument("--minsupport", type=int, default=2)
+    p.add_argument("--originpad", type=int, default=20)
     p.add_argument("--rep5a", type=int, default=8470)
     p.add_argument("--rep5b", type=int, default=8482)
     p.add_argument("--rep3a", type=int, default=13447)
     p.add_argument("--rep3b", type=int, default=13459)
-    call(p.parse_args())
+    args = p.parse_args()
+    try:
+        call(args)
+    except (ValueError, OSError) as e:
+        sys.exit("[callsv] ERROR: %s (bam=%s, ref=%s, chrom=%s)"
+                 % (e, args.bam, args.ref, args.chrom))
 
 
 if __name__ == "__main__":

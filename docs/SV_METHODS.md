@@ -235,6 +235,7 @@ Concatenates per-sample VCFs (drops `##sample=`, dedups, `bedtools sort -header`
 | `HP_SV_MINMAPQ` | 20 | min MAPQ for split reads (NUMT multimapper guard) |
 | `HP_SV_MINJR` | 3 | min distinct junction reads for a PASS deletion |
 | `HP_SV_MINSIZE` | 50 | min deletion size (bp); separates from small indels |
+| `HP_SV_MAXSIZE` | 0 | max deletion size (bp); `0` ⇒ `mtlen-1` |
 | `HP_SV_PAD` | 25 | breakpoint clustering + direct-repeat tolerance (bp) |
 | `HP_SV_DROP` | 0.9 | max `medInside/medFlank` for PASS (≤0.9 ⇒ ≥10% drop) |
 | `HP_SV_FLANK` | 200 | flank window (bp) for the coverage ratio |

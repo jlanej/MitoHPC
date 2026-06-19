@@ -114,6 +114,7 @@ export HP_SV=                     # large-deletion caller: callsv (empty=off)
 export HP_SV_MINJR=3              # min junction-supporting split reads for a PASS deletion
 export HP_SV_MINMAPQ=20           # min MAPQ for split reads (NUMT multimapper guard)
 export HP_SV_MINSIZE=50           # min deletion size (bp)
+export HP_SV_MAXSIZE=0            # max deletion size (bp; 0 => MTLEN-1)
 export HP_SV_PAD=25               # breakpoint clustering / direct-repeat tolerance (bp)
 export HP_SV_DROP=0.9             # max medInside/medFlank coverage ratio for PASS (<=0.9 => >=10% drop)
 export HP_SV_FLANK=200            # flanking window for the coverage-ratio estimate (bp)
