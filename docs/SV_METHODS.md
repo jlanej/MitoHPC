@@ -204,26 +204,62 @@ real dosage loss.
 
 ## 6. Output schema
 
-### 6.1 `$O.sv.vcf` (and cohort `sv.concat.vcf`)
-Header from `scripts/sv.vcf` (with a `##sample=` line injected). One record per cluster:
+The output follows general VCF/SV best practice (not this repo's other VCFs): a spec-correct,
+tool-compatible (`bcftools`/IGV/AnnotSV), scientifically rich, reproducible single-sample VCF, plus
+a tidy long table and cohort artifacts. **VCF 4.2 with negative `SVLEN` for `DEL`** (the widely
+supported convention; do not switch to a positive `SVLEN` unless you also bump `##fileformat` to
+4.4 — that is the one genuinely-wrong combination).
 
+### 6.1 `$O.sv.vcf` (per sample)
+`callsv.py` injects dynamic provenance/contig headers, then the static field definitions from
+`scripts/sv.vcf`, then a `#CHROM` line whose **genotype column is the real sample name** (the
+sample is NOT an `INFO` field). Header lines emitted:
+`##fileformat`, `##fileDate`, `##source=MitoHPC_callsv <version> (pysam <v>)`, `##reference`,
+`##contig=<ID=chrM,length=16569,md5=…>`, `##sample`, `##callsv_command="…"`, one
+`##callsv_param_HP_SV_*` per threshold, then the `##ALT/##FILTER/##INFO/##FORMAT` definitions.
+
+Example PASS record (del4977 @30%):
 ```
-#CHROM POS   ID REF ALT    QUAL FILTER       INFO
-chrM   8482  .  A   <DEL>  .    PASS         SM=sv_del4977_h30;SVTYPE=DEL;END=13446;SVLEN=-4964;
-                                             JR=133;SR=368;AFJ=0.265;AFC=0.254;AFDIFF=0.011;
-                                             CVGR=0.746;REPEAT   GT:DP:AF  0/1:566:0.265
+chrM  8482  .  A  <DEL>  .  PASS  SVTYPE=DEL;END=13446;SVLEN=-4964;SVCLAIM=DJ;IMPRECISE;
+   CIPOS=0,13;CIEND=0,13;HOMLEN=13;HOMSEQ=ACCTCCCTCACCA;DELCLASS=I;
+   GENE=ATP8:P,ATP6:F,COX3:F,TRNG:F,ND3:F,TRNR:F,ND4L:F,ND4:F,TRNH:F,TRNS2:F,TRNL2:F,ND5:P;
+   NGENE=12;COMMON;HGVS=NC_012920.1:m.8483_13446del;JR=133;SR=368;AFJ=0.265;AFC=0.254;
+   AFDIFF=0.011;CVGR=0.746;REPEAT   GT:DP:AD:AF:SR   0/1:566:368,133:0.265:133
 ```
-- `POS = bp5`, `END = bp3-1` (last deleted base), `SVLEN = -(deleted bases)`, `REF` = reference
-  base at `bp5`, `ALT = <DEL>`.
-- `FORMAT = GT:DP:AF` → `0/1 : round(medFlank) : AFJ`.
 
-### 6.2 `$O.sv.tab` (and cohort `sv.tab`)
-`#sample  chrom  bp5  bp3  svlen  JR  SR  AFJ  AFC  AFDIFF  CVGR  FLANKDP  FILTER  flags`
+| Field | Meaning |
+|---|---|
+| `POS / END / SVLEN` | `bp5` / last deleted base (`bp3-1`) / `-(deleted bases)` (negative, 4.2) |
+| `SVCLAIM` | `DJ` (junction + coverage agree) or `J` (split-read only) — VCF 4.4 evidence claim |
+| `IMPRECISE`,`CIPOS`,`CIEND` | set when `HOMLEN>0`; CI = `0,HOMLEN` (breakpoint slides within the repeat) |
+| `HOMLEN`,`HOMSEQ` | breakpoint microhomology / direct-repeat length + sequence (13 / `ACCTCCCTCACCA` for del4977) |
+| `DELCLASS` | `I` (perfect repeat ≥5 bp) / `II` (1–4 bp microhomology) / `III` (none) |
+| `GENE`,`NGENE` | mtDNA features deleted, `name:F` (fully) or `name:P` (partial), from `RefSeq/genes.bed.gz` |
+| `COMMON` | matches the MITOMAP common deletion del4977 (m.8470_13447, within tolerance) |
+| `HGVS` | approximate `NC_012920.1:m.<a>_<b>del` |
+| `JR`,`SR` | junction (split) reads / wild-type spanning reads (site-level) |
+| `AFJ`,`AFC`,`AFDIFF`,`CVGR` | heteroplasmy (junction / coverage), disagreement QC, coverage ratio |
+| flags | `REPEAT NUMT HP DLOOP WRAP` (advisory breakpoint-region flags) |
+| `FORMAT GT:DP:AD:AF:SR` | `0/1 : round(medFlank) : SR,JR : AFJ : JR` (AD = REF/ALT support; FORMAT `SR` = split reads, Manta-style) |
 
-### 6.3 Cohort aggregation (`getSVSummary.sh`)
-Concatenates per-sample VCFs (drops `##sample=`, dedups, `bedtools sort -header`) into
-`$ODIR/sv.concat.vcf`, and per-sample tabs (one header) into `$ODIR/sv.tab`. Separate from
-`getSummary.sh`; emitted by `run.sh` only when `HP_SV` is set.
+### 6.2 `$O.sv.tab` (tidy/long, one row per sample-deletion)
+Header (parse by **name**, not position):
+`sample chrom pos_bp5 end_bp3 svlen svclaim jr sr af_junction af_coverage afdiff cvgr flank_dp
+homlen homseq delclass common ngene gene_list hgvs filter flags`.
+Null convention: numeric columns always populated; `homseq` empty when `homlen=0`; `gene_list`/`flags`
+comma-joined (or `.` when empty); `common` is `0/1`. `svlen` here is the **positive** deletion length
+(the VCF carries the signed `SVLEN`).
+
+### 6.3 Cohort aggregation (`getSVSummary.sh`, gated on `HP_SV`)
+Separate from `getSummary.sh` (never touched). bgzip+tabix-indexes each per-sample VCF, then writes:
+- **`$ODIR/sv.tab`** — concatenated tidy long table (one header) for R/pandas.
+- **`$ODIR/sv.merged.vcf.gz`** — `bcftools merge` cohort genotype matrix: one row per site, one
+  column per sample, `NS` = number of samples carrying it (the **recurrence** substrate).
+- **`$ODIR/sv.sites.vcf.gz`** — sites-only union (`bcftools view -G`) for annotation (AnnotSV/VEP).
+
+(No single mixed-sample concatenated VCF is produced — different sample columns can't share one VCF;
+use the merged matrix or the long table. Exact-match merge can over-split imprecise breakpoints across
+a cohort; positional/fuzzy merging is a future refinement.)
 
 ---
 
@@ -284,19 +320,28 @@ Real-time, self-contained evaluation — no full pipeline run needed:
 bash test/sv/run_test.sh        # -> ALL TESTS PASSED
 ```
 
-`make_testdata.py` simulates paired-end reads from **wild-type + deleted circular genomes** at a
-known heteroplasmy (so the coverage ratio outside vs inside the deletion equals the spiked
-fraction by construction); `gen_bams.sh` aligns them through the pipeline's own circular path
+`make_testdata.py` simulates paired-end reads from **wild-type + event circular genomes** at a
+known heteroplasmy (so the coverage ratio outside vs inside a deletion equals the spiked fraction by
+construction); `gen_bams.sh` aligns them through the pipeline's own circular path
 (`minimap2 -ax sr → samtools view -F 0x90C → circSam.pl → sort`) to produce faithful `$O.bam`
-files (committed, 1–2 MB each). `run_test.sh` runs `callSV.sh` and matches calls to `truth.tsv`
-within tolerance.
+files (committed, ~13 MB total). `run_test.py` (invoked by `run_test.sh`) runs the caller and checks
+calls against `truth.tsv`, then exercises degenerate inputs and (when `bcftools` is present) cohort
+aggregation and a VCF-spec gate. **16 checks**:
 
-| Sample | Truth | Result |
-|---|---|---|
-| common deletion @ 30% | DEL m.~8470–13446, 0.30 | **PASS**, `REPEAT`, AFJ 0.265 |
-| common deletion @ 5% | same, 0.05 | detected, `no_cvg_drop` tier, AFJ 0.041 |
-| non-repeat deletion @ 50% | DEL m.~6000–10998, 0.50 | **PASS**, no `REPEAT`, AFJ 0.404 |
-| wild-type | none | 0 calls (specificity) |
+| Scenario | What it verifies |
+|---|---|
+| del4977 @30% / @5% | PASS + `REPEAT`/`COMMON`/`HOMLEN=13`/`DELCLASS=I`/genes; low-het → `no_cvg_drop` tier |
+| non-repeat deletion @50% | PASS, no `REPEAT`, `DELCLASS` from incidental microhomology |
+| **multiple deletions** | both deletions detected as separate PASS records (no merge/cross-talk) |
+| **near-homoplasmy @95%** | PASS, `AFJ→1.0` (no divide-by-zero) |
+| **tandem duplication** | **zero PASS** (coverage *gain*, `CVGR>1` → `no_cvg_drop`) |
+| **origin-crossing deletion** | **zero PASS**, all coords ≤ contig length (valid VCF) |
+| D-loop breakpoint | PASS + `DLOOP` flag |
+| low coverage (40×) | still detected (cohort depth variability) |
+| wild-type | 0 PASS (specificity) |
+| **degenerate inputs** | empty BAM → 0 records; unindexed/wrong-contig/wrong-`mtlen` → clean one-line error, **never a traceback** |
+| **cohort** | `getSVSummary.sh` builds the merge matrix + sites union; recurrence (`NS≥2`) detected |
+| **VCF spec** | `bcftools view` accepts every per-sample VCF (no undefined-contig/INFO warnings) |
 
 See [`../test/sv/README.md`](../test/sv/README.md) for layout and regeneration.
 
@@ -307,8 +352,16 @@ See [`../test/sv/README.md`](../test/sv/README.md) for layout and regeneration.
 - **Recall floor.** Uses `SA:Z:` split reads only (no soft-clip-only clustering, no local
   assembly); very low-heteroplasmy junctions with few split reads can be missed. The coverage-drop
   PASS gate intentionally relegates sub-~10% events to the `no_cvg_drop` tier.
-- **DEL vs DUP.** No origin-of-replication logic; a complementary-arc duplication could be reported
-  as a deletion. Mitigated by the coverage-drop gate (biases to true deletions) and `WRAP`/`DLOOP`.
+- **Minimum size is aligner-bounded.** Only deletions the aligner represents as a *split read*
+  (`SA` tag) are seen; smaller deletions that fit inside one gapped alignment (CIGAR `D`) are not
+  detected, so the effective floor (~hundreds of bp with 150 bp reads) is set by the aligner, not
+  by `HP_SV_MINSIZE`. (v2: also harvest large CIGAR-`D` operations.)
+- **DEL vs DUP / origin-crossing.** No origin-of-replication logic. A tandem duplication yields a
+  coverage *gain* (`CVGR>1` → `no_cvg_drop`, never PASS), and an origin-crossing deletion is
+  reported as its large complementary arc — also `no_cvg_drop` (no coverage drop in the claimed
+  span), never PASS. SA coordinates in the chrMC extension are wrapped into `1..mtlen` so VCF
+  `POS`/`END` always stay within the contig. The true small origin-crossing deletion is not yet
+  resolved (deferred to DEL/DUP disambiguation).
 - **Heteroplasmy is approximate.** `SR` is a coverage proxy (depth at the breakpoints − `JR`), not
   an exact intact-spanning-pair count; `AFC` is mildly biased near breakpoints by the coverage
   transition and near the D-loop. Reporting both estimates + `AFDIFF` exposes this.
@@ -327,7 +380,7 @@ DEL/DUP disambiguation, optional eKLIPse/long-read engines) is in `SV_CALLING.md
 export HP_SV=callsv          # (optionally override HP_SV_* thresholds)
 ```
 then run normally (`run.sh > run.all.sh; bash run.all.sh`). Produces `$O.sv.vcf`/`$O.sv.tab` per
-sample and `$ODIR/sv.concat.vcf`/`$ODIR/sv.tab` for the cohort.
+sample and `$ODIR/{sv.tab, sv.merged.vcf.gz, sv.sites.vcf.gz}` for the cohort.
 
 **Standalone** on any chrM BAM (needs `python3` with `pysam`):
 ```bash
@@ -347,6 +400,18 @@ SV caller no longer shells out to them.
 
 ## Changelog
 
+- **v1.2 (best-practice output + cohort robustness):** rich, spec-correct VCF — `##contig`/
+  `##reference`/provenance headers, **sample-named genotype column** (dropped `INFO/SM`),
+  `HOMLEN`/`HOMSEQ`/`DELCLASS`/`IMPRECISE`/`CIPOS`/`CIEND` (breakpoint microhomology), `SVCLAIM`,
+  `COMMON` (del4977), `GENE`/`NGENE` (affected mtDNA features), `HGVS`, `FORMAT GT:DP:AD:AF:SR`;
+  tidy long `$O.sv.tab`. Cohort `getSVSummary.sh` now builds a `bcftools merge` matrix
+  (`sv.merged.vcf.gz`, `NS` recurrence) + sites union (`sv.sites.vcf.gz`) + long `sv.tab`. Caller
+  fix: **wrap SA-tag coordinates** into `1..mtlen` (origin-crossing reads no longer emit
+  out-of-contig `POS`/`END`). Tests expanded to 16 checks (multiple deletions, near-homoplasmy,
+  tandem-dup-not-called, origin-crossing, D-loop, low coverage, degenerate inputs, cohort
+  recurrence, bcftools spec gate) via a Python harness `test/sv/run_test.py`. This is a deliberate
+  **schema change** from v1.1 (so the "field-for-field parity with perl" claim now applies only to
+  the core numeric fields, not the VCF/tab layout). Default-off behavior unchanged.
 - **v1.1 (Python/pysam port):** reimplemented the two Perl cores (`sa2del.pl`, `svCall.pl`) as a
   single Python 3 + `pysam` module `scripts/callsv.py`; `callSV.sh` is now a thin driver
   (`HP_PYTHON` override). BAM iteration, SA/CIGAR parsing, and per-base depth (`count_coverage`,

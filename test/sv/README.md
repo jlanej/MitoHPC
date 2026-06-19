@@ -7,31 +7,38 @@ Self-contained, real-time evaluation of the MitoHPC structural-variant caller
 
 | Path | Committed | Purpose |
 |---|---|---|
-| `bams/*.bam(.bai)` | ✅ (~1–2 MB each) | Mock `$O.bam`-equivalents: circular-aware chrM alignments carrying split-read junctions + coverage drops |
-| `truth.tsv` | ✅ | Ground truth (breakpoints, svlen, heteroplasmy) per sample |
-| `make_testdata.py` | ✅ | Read simulator (WT + deleted circular genomes → FASTQ) |
+| `bams/*.bam(.csi)` | ✅ (~13 MB total) | Mock `$O.bam`-equivalents: circular-aware chrM alignments carrying split-read junctions + coverage signal |
+| `truth.tsv` | ✅ | Ground truth per (sample, event): `sample kind bp5 bp3 svlen het depth` |
+| `make_testdata.py` | ✅ | Read simulator: WT + per-event circular genomes (deletion / duplication / origin-crossing) → FASTQ |
 | `gen_bams.sh` | ✅ | Aligns FASTQ → BAM through the pipeline's circular path (minimap2 → `circSam.pl` → sort) |
-| `run_test.sh` | ✅ | Runs the caller on each BAM and compares to `truth.tsv` |
+| `run_test.py` | ✅ | The harness (python3 + pysam): scenarios vs `truth.tsv`, degenerate inputs, cohort, VCF-spec gate |
+| `run_test.sh` | ✅ | Thin wrapper → `run_test.py` |
 | `fastq/`, `out/` | ❌ (gitignored) | Regenerable intermediates |
 
-## Samples
+## Samples (10) + robustness checks
 
-| Sample | Deletion | Heteroplasmy | Tests |
-|---|---|---|---|
-| `sv_del4977_h30` | common deletion m.8470–13446 (~4977 bp, 13 bp direct repeat) | 30% | PASS call, `REPEAT` flag, heteroplasmy |
-| `sv_del4977_h05` | common deletion | 5% | low-heteroplasmy detection (split-only `no_cvg_drop` tier) |
-| `sv_del6000_h50` | non-repeat deletion m.6000–10998 (~4999 bp) | 50% | generality, **no** `REPEAT` flag |
-| `sv_wt` | none | 0% | specificity (zero PASS calls) |
+| Sample | Construction | Checks |
+|---|---|---|
+| `sv_del4977_h30` / `_h05` | common deletion @30% / @5% | PASS + `REPEAT`/`COMMON`/`HOMLEN=13`/`DELCLASS=I`/genes; 5% → `no_cvg_drop` tier |
+| `sv_del6000_h50` | non-repeat deletion @50% | PASS, no `REPEAT`/`COMMON` |
+| `sv_multidel` | **two** deletions (del4977 + del6000) | both detected as separate PASS records |
+| `sv_homoplasmy` | common deletion @95% | PASS, `AFJ→1.0`, no divide-by-zero |
+| `sv_dup` | tandem duplication | **zero PASS** (`CVGR>1` → `no_cvg_drop`) |
+| `sv_origin` | origin-crossing deletion | **zero PASS**, all coords ≤ contig (valid VCF) |
+| `sv_dloop` | 5′ breakpoint in the D-loop | PASS + `DLOOP` flag |
+| `sv_lowcov` | common deletion @50%, 40× depth | still detected |
+| `sv_wt` | wild-type | 0 PASS (specificity) |
 
-The del4977 breakpoint lands inside the 13 bp direct repeat (called ~`8482/13447`,
-svlen 4964) — the real-world microhomology ambiguity — which `run_test.sh` matches
-within tolerance and which trips the `REPEAT` flag.
+Plus: degenerate inputs (empty / unindexed / wrong-contig / wrong-`mtlen` BAM → clean error, never a
+traceback), cohort aggregation (`getSVSummary.sh` merge matrix + sites + recurrence), and a
+`bcftools` VCF-spec gate. The del4977 breakpoint lands inside the 13 bp direct repeat (called
+~`8482/13447`), matched within tolerance.
 
 ## Run the test
 
-Needs `python3` with `pysam` (the caller `scripts/callsv.py` does everything in-process — no
-`samtools` needed here). Point `HP_PYTHON` at an interpreter that has `pysam` if your default
-`python3` doesn't:
+Needs `python3` with `pysam` (the caller does everything in-process). The cohort + VCF-spec gates
+also use `bcftools`/`bgzip`/`tabix` when present (skipped otherwise). Point `HP_PYTHON` at an
+interpreter that has `pysam` if your default `python3` doesn't:
 
 ```bash
 bash test/sv/run_test.sh                                   # -> "ALL TESTS PASSED"

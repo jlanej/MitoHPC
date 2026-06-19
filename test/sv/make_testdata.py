@@ -89,15 +89,53 @@ def mutate(s, err, rng, bases):
     return "".join(out)
 
 
-# sample definitions: (name, bp5, bp3, heteroplasmy, outside_depth)
-# bp5/bp3 are 1-based retained breakpoint bases; svlen = bp3-bp5-1.
-# A heteroplasmy of 0 / bp5==0 means wild-type only (negative control).
+def make_dup(seq, a, b):
+    """Tandem duplication of 1-based [a, b]: ...[a..b][a..b]... (coverage GAIN, junction
+    where reference order reverses). Used to confirm the caller does NOT PASS a DEL on it."""
+    return seq[:b] + seq[a - 1:b] + seq[b:]
+
+
+def make_delwrap(seq, bp5, bp3):
+    """Origin-crossing deletion: retain the arc [bp3, bp5] (bp5 > bp3), delete the
+    complementary arc that crosses the origin. The junction joins bp5 -> bp3."""
+    return seq[bp3 - 1:bp5]
+
+
+# Sample definitions for a cohort-robustness suite. Each sample: (name, outside_depth,
+# events). An event is (kind, p1, p2, het): kind 'del' (p1=bp5,p2=bp3 retained breakpoints),
+# 'dup' (p1=a,p2=b duplicated segment), or 'delwrap' (p1=bp5,p2=bp3, bp5>bp3, origin-crossing).
+# Wild-type fraction per sample = 1 - sum(event hets). Empty events => pure wild-type.
 SAMPLES = [
-    ("sv_del4977_h30", 8469, 13447, 0.30, 300),  # canonical common deletion, 30%
-    ("sv_del4977_h05", 8469, 13447, 0.05, 400),  # common deletion, 5% (sensitivity)
-    ("sv_del6000_h50", 5999, 10999, 0.50, 300),  # non-repeat deletion, 50% (generality)
-    ("sv_wt",          0,    0,     0.00, 300),  # wild-type only (specificity)
+    ("sv_del4977_h30", 300, [("del", 8469, 13447, 0.30)]),   # common deletion, 30% (positive control)
+    ("sv_del4977_h05", 400, [("del", 8469, 13447, 0.05)]),   # common deletion, 5% (low-het floor)
+    ("sv_del6000_h50", 300, [("del", 5999, 10999, 0.50)]),   # non-repeat deletion, 50% (Class III)
+    ("sv_wt",          300, []),                              # wild-type only (specificity)
+    ("sv_multidel",    400, [("del", 8469, 13447, 0.25),      # TWO concurrent deletions, independent
+                             ("del", 5999, 10999, 0.15)]),
+    ("sv_homoplasmy",  300, [("del", 8469, 13447, 0.95)]),    # near-homoplasmic common deletion
+    ("sv_dup",         300, [("dup", 6000, 7000, 0.50)]),     # tandem duplication (must NOT PASS as DEL)
+    ("sv_origin",      400, [("delwrap", 16400, 200, 0.40)]), # origin-crossing deletion (safe handling)
+    ("sv_dloop",       300, [("del", 400, 6000, 0.40)]),      # 5' breakpoint in the D-loop (DLOOP flag)
+    ("sv_lowcov",      40,  [("del", 8469, 13447, 0.50)]),    # low coverage (cohort depth variability)
 ]
+
+
+def event_genome(seq, kind, p1, p2):
+    if kind == "del":
+        return make_deletion(seq, p1, p2)
+    if kind == "dup":
+        return make_dup(seq, p1, p2)
+    if kind == "delwrap":
+        return make_delwrap(seq, p1, p2)
+    raise ValueError("unknown event kind %r" % kind)
+
+
+def event_svlen(kind, p1, p2, mtlen):
+    if kind == "del":
+        return p2 - p1 - 1
+    if kind == "delwrap":            # origin-crossing deleted arc length
+        return (mtlen - p1) + (p2 - 1)
+    return 0                         # dup: not a deletion length
 
 
 def main():
@@ -115,36 +153,31 @@ def main():
     glen = len(seq)
     os.makedirs(args.out, exist_ok=True)
     truth = open(os.path.join(args.out, "truth.tsv"), "w")
-    truth.write("#sample\tbp5\tbp3\tsvlen\theteroplasmy\toutside_depth\n")
+    truth.write("#sample\tkind\tbp5\tbp3\tsvlen\thet\tdepth\n")
 
-    for (name, bp5, bp3, het, depth) in SAMPLES:
+    wt2 = seq + seq  # circularized WT for wrap-around fragments
+    for (name, depth, events) in SAMPLES:
         rng = random.Random(args.seed + sum(ord(c) for c in name))
-        wt2 = seq + seq  # circularized WT for wrap-around fragments
         f1 = open(os.path.join(args.out, name + "_1.fq"), "w")
         f2 = open(os.path.join(args.out, name + "_2.fq"), "w")
 
-        if bp5 == 0:  # wild-type only
-            n_wt = round(depth * glen / args.rlen)
-            emit_reads(f1, f2, wt2, n_wt, args.rlen, args.fmin, args.fmax,
-                       args.err, rng, name + "_wt")
-            truth.write("%s\t.\t.\t.\t0\t%d\n" % (name, depth))
-        else:
-            del_seq = make_deletion(seq, bp5, bp3)
-            dlen = len(del_seq)
-            del2 = del_seq + del_seq
-            svlen = bp3 - bp5 - 1
-            # depth contributions: WT -> depth*(1-h), DEL -> depth*h (outside)
-            n_wt = round(depth * (1 - het) * glen / args.rlen)
-            n_del = round(depth * het * dlen / args.rlen)
-            emit_reads(f1, f2, wt2, n_wt, args.rlen, args.fmin, args.fmax,
-                       args.err, rng, name + "_wt")
-            emit_reads(f1, f2, del2, n_del, args.rlen, args.fmin, args.fmax,
-                       args.err, rng, name + "_del")
-            truth.write("%s\t%d\t%d\t%d\t%.3f\t%d\n"
-                        % (name, bp5, bp3, svlen, het, depth))
+        hetsum = sum(e[3] for e in events)
+        n_wt = round(depth * (1 - hetsum) * glen / args.rlen)
+        emit_reads(f1, f2, wt2, n_wt, args.rlen, args.fmin, args.fmax, args.err, rng, name + "_wt")
+
+        if not events:
+            truth.write("%s\tnone\t.\t.\t.\t0\t%d\n" % (name, depth))
+        for i, (kind, p1, p2, het) in enumerate(events):
+            eg = event_genome(seq, kind, p1, p2)
+            eg2 = eg + eg
+            n_e = round(depth * het * len(eg) / args.rlen)
+            emit_reads(f1, f2, eg2, n_e, args.rlen, args.fmin, args.fmax,
+                       args.err, rng, "%s_%s%d" % (name, kind, i))
+            truth.write("%s\t%s\t%d\t%d\t%d\t%.3f\t%d\n"
+                        % (name, kind, p1, p2, event_svlen(kind, p1, p2, glen), het, depth))
         f1.close()
         f2.close()
-        sys.stderr.write("[make_testdata] %s: wrote FASTQ (het=%.2f)\n" % (name, het))
+        sys.stderr.write("[make_testdata] %s: %d event(s), depth=%d\n" % (name, len(events), depth))
 
     truth.close()
     sys.stderr.write("[make_testdata] truth.tsv written to %s\n" % args.out)

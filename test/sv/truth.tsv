@@ -1,5 +1,12 @@
-#sample	bp5	bp3	svlen	heteroplasmy	outside_depth
-sv_del4977_h30	8469	13447	4977	0.300	300
-sv_del4977_h05	8469	13447	4977	0.050	400
-sv_del6000_h50	5999	10999	4999	0.500	300
-sv_wt	.	.	.	0	300
+#sample	kind	bp5	bp3	svlen	het	depth
+sv_del4977_h30	del	8469	13447	4977	0.300	300
+sv_del4977_h05	del	8469	13447	4977	0.050	400
+sv_del6000_h50	del	5999	10999	4999	0.500	300
+sv_wt	none	.	.	.	0	300
+sv_multidel	del	8469	13447	4977	0.250	400
+sv_multidel	del	5999	10999	4999	0.150	400
+sv_homoplasmy	del	8469	13447	4977	0.950	300
+sv_dup	dup	6000	7000	0	0.500	300
+sv_origin	delwrap	16400	200	368	0.400	400
+sv_dloop	del	400	6000	5599	0.400	300
+sv_lowcov	del	8469	13447	4977	0.500	40

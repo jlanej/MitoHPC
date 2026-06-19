@@ -40,15 +40,24 @@ MINDP=${HP_SV_MINDP:-0}         # min flank depth for PASS (0 => disabled)
 test -s "$BAM"
 test -s "$RDIR/$MT.fa"
 
-# optional false-positive masks (flags only)
+# optional false-positive masks + gene annotation (flags / annotation only)
 maskopt=""
 [ -s "$RDIR/HP.bed.gz" ]    && maskopt="$maskopt --hp $RDIR/HP.bed.gz"
 [ -s "$RDIR/NUMT.vcf.gz" ]  && maskopt="$maskopt --numt $RDIR/NUMT.vcf.gz"
 [ -s "$RDIR/DLOOP.bed.gz" ] && maskopt="$maskopt --dloop $RDIR/DLOOP.bed.gz"
+[ -s "$RDIR/genes.bed.gz" ] && maskopt="$maskopt --genes $RDIR/genes.bed.gz"
+
+# tool version for provenance (##source): git describe, else VERSION.md, else 'dev'
+VER=dev
+[ -s "$SDIR/../VERSION.md" ] && VER=$(head -1 "$SDIR/../VERSION.md" | tr -d '[:space:]')
+if command -v git >/dev/null 2>&1; then
+  GITV=$(git -C "$SDIR/.." describe --tags --always --dirty 2>/dev/null || true)
+  [ -n "$GITV" ] && VER=$GITV
+fi
 
 "$PY" "$SDIR/callsv.py" \
   --bam "$BAM" --ref "$RDIR/$MT.fa" --header "$SDIR/sv.vcf" --sample "$S" \
-  --out "$O.sv.vcf" --tab "$O.sv.tab" \
+  --out "$O.sv.vcf" --tab "$O.sv.tab" --version "$VER" \
   --chrom "$MT" --mtlen "$MTLEN" --minmapq "$MINMAPQ" --minjr "$MINJR" \
   --minsize "$MINSIZE" --maxsize "$MAXSIZE" --pad "$PAD" --drop "$DROP" \
   --flank "$FLANK" --mindepth "$MINDP" $maskopt

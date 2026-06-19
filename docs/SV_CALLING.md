@@ -229,11 +229,14 @@ dependency).
 > **Status: implemented.** Core caller `callsv.py` (Python 3 + `pysam`) with a thin `callSV.sh`
 > driver, plus `sv.vcf` header and `getSVSummary.sh`; wired via `HP_SV` (default off). `pysam` is
 > installed in the Docker image and CI. The as-built method (formulas, schema, parameters) is
-> documented in **[`SV_METHODS.md`](SV_METHODS.md)**. Evaluated on committed mock BAMs in
-> `test/sv/` — `bash test/sv/run_test.sh` recovers the common deletion at 30% (PASS, `REPEAT`
-> flag), the same deletion at 5% (detected in the split-only `no_cvg_drop` tier), a non-repeat
-> deletion at 50% (PASS, no `REPEAT`), and zero PASS calls on the wild-type negative control —
-> with junction- and coverage-based heteroplasmy estimates agreeing within a few percent.
+> documented in **[`SV_METHODS.md`](SV_METHODS.md)**. The output is general VCF/SV best practice
+> (`##contig`/`##reference`/provenance, sample-named column, `HOMLEN`/`DELCLASS`/`CIPOS`, `SVCLAIM`,
+> affected `GENE`s, `COMMON`, `HGVS`, cohort `bcftools merge` recurrence matrix + sites union).
+> Evaluated by **16 checks** in `test/sv/` (`bash test/sv/run_test.sh`): the common deletion at
+> 30%/5%, a non-repeat deletion, **multiple concurrent deletions**, near-homoplasmy, **tandem
+> duplication and origin-crossing both correctly not PASSed**, a D-loop-flagged deletion, low
+> coverage, wild-type specificity, degenerate-input robustness (no tracebacks), cohort recurrence,
+> and a `bcftools` VCF-spec gate.
 
 A blend that takes **B's signal source** (recompute a clean split-read signal from the **live
 `$O.bam`**, since we must hook in before BAM cleanup anyway — this is the "build our own, better

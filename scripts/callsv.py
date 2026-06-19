@@ -16,13 +16,26 @@ docs/SV_METHODS.md (kept in sync with this code).
 Driven by scripts/callSV.sh; all thresholds come from HP_SV_* env vars there.
 """
 import argparse
+import datetime
 import gzip
+import hashlib
+import os
 import sys
 from collections import Counter
 
 import pysam
 
 REF_CONSUMING = frozenset("MDN=X")  # CIGAR ops that advance the reference
+
+# del4977 "common deletion" recognition (rCRS): 13bp direct repeat windows + size band
+COMMON_BP5 = (8470, 8482)
+COMMON_BP3 = (13447, 13459)
+COMMON_SVLEN = (4960, 4990)
+
+
+def wrap1(p, m):
+    """Wrap a 1-based position into 1..m (circular genome)."""
+    return ((p - 1) % m) + 1
 
 
 # --------------------------------------------------------------------------- #
@@ -108,11 +121,75 @@ def near(p, a, b, pad):
     return (a - pad) <= p <= (b + pad)
 
 
+def microhomology(seq, bp5, bp3, mtlen, maxk=40):
+    """Breakpoint microhomology / direct repeat length and sequence.
+
+    Split-read aligners place a deletion junction so its two arms OVERLAP across any
+    repeat shared by the breakpoints: the last k bases of the upstream arm (ending at
+    bp5) equal the first k bases of the downstream arm (starting at bp3). HOMLEN is the
+    largest such k. For the del4977 common deletion this returns (13, 'ACCTCCCTCACCA').
+    Returns (homlen, homseq).
+    """
+    best, bestseq = 0, ""
+    n = len(seq)
+    if n == 0:
+        return 0, ""
+    for k in range(1, maxk + 1):
+        left = "".join(seq[wrap1(bp5 - k + 1 + j, mtlen) - 1] for j in range(k))
+        right = "".join(seq[wrap1(bp3 + j, mtlen) - 1] for j in range(k))
+        if left == right:
+            best, bestseq = k, right
+    return best, bestseq
+
+
+def load_genes(path, chrom):
+    """Load gene/feature intervals from a 6-col BED(.gz) for one contig.
+
+    Returns list of (start1, end1, name) 1-based inclusive (col4 = feature name)."""
+    iv = []
+    if not path or not os.path.exists(path):
+        return iv
+    try:
+        with gzip.open(path, "rt") as fh:
+            for line in fh:
+                if line.startswith("#"):
+                    continue
+                f = line.split()
+                if len(f) >= 4 and f[0] == chrom and f[1].isdigit():
+                    iv.append((int(f[1]) + 1, int(f[2]), f[3]))
+    except OSError:
+        pass
+    return iv
+
+
+def genes_in_deletion(genes, d1, d2):
+    """Features overlapping the (linear, non-wrapped) deleted span [d1, d2].
+
+    Returns a list of 'name:F' (fully deleted) or 'name:P' (partially), feature order."""
+    out = []
+    if d2 < d1:
+        return out
+    for (g1, g2, name) in genes:
+        if g1 <= d2 and g2 >= d1:               # overlap
+            full = g1 >= d1 and g2 <= d2
+            out.append("%s:%s" % (name, "F" if full else "P"))
+    return out
+
+
+def fasta_md5(seq):
+    """MD5 of the uppercase reference sequence (matches the VCF ##contig md5 convention)."""
+    return hashlib.md5(seq.upper().encode()).hexdigest()
+
+
 # --------------------------------------------------------------------------- #
 # Stage A: split-read deletion junctions (replaces sa2del.pl)
 # --------------------------------------------------------------------------- #
-def extract_junctions(bam, chrom, minmapq, minsize, maxsize, pad, minsupport):
-    """Return clustered junctions: list of (bp5, bp3, svlen, JR, strand)."""
+def extract_junctions(bam, chrom, minmapq, minsize, maxsize, pad, minsupport, mtlen):
+    """Return clustered junctions: list of (bp5, bp3, svlen, JR, strand).
+
+    SA-tag coordinates may live in the circularized chrMC extension (>mtlen, since circSam.pl
+    does not rewrite SA tags), so they are wrapped into 1..mtlen; clusters whose final
+    breakpoints fall outside 1..mtlen are dropped (keeps VCF POS/END within the contig)."""
     pts = []  # (up, dn, rid, strand)
     with pysam.AlignmentFile(bam, "rb") as af:
         for r in af.fetch(chrom):
@@ -139,7 +216,7 @@ def extract_junctions(bam, chrom, minmapq, minsize, maxsize, pad, minsupport):
                 continue
             if not spos.isdigit() or scig == "*" or not scig:   # skip degenerate SA (cf. sa2del.pl)
                 continue
-            sbeg = int(spos)
+            sbeg = wrap1(int(spos), mtlen)     # SA coords may be in chrMC extension space (>mtlen)
             send = sbeg + ref_len_from_cigar(scig) - 1
 
             if abeg <= sbeg:
@@ -171,6 +248,8 @@ def extract_junctions(bam, chrom, minmapq, minsize, maxsize, pad, minsupport):
         if jr < minsupport:
             continue
         bp5, bp3, strand = mode(ups), mode(dns), mode(strands)
+        if not (1 <= bp5 <= mtlen and 1 <= bp3 <= mtlen):   # keep VCF POS/END within the contig
+            continue
         svlen = bp3 - bp5 - 1
         if svlen < minsize or svlen > maxsize:
             continue
@@ -205,35 +284,38 @@ def per_base_depth(bam, chrom, mtlen):
 # --------------------------------------------------------------------------- #
 # Stage B: coverage corroboration, heteroplasmy, flags (replaces svCall.pl)
 # --------------------------------------------------------------------------- #
+# tidy/long TSV column order (parse by NAME downstream, not position)
+TAB_COLUMNS = ["sample", "chrom", "pos_bp5", "end_bp3", "svlen", "svclaim", "jr", "sr",
+               "af_junction", "af_coverage", "afdiff", "cvgr", "flank_dp", "homlen",
+               "homseq", "delclass", "common", "ngene", "gene_list", "hgvs", "filter", "flags"]
+
+
 def call(args):
     maxsize = args.maxsize if args.maxsize else args.mtlen - 1
     m = args.mtlen
 
-    def wrap(p):
-        return ((p - 1) % m) + 1
-
     def med_range(dep, a, b):
         if b < a:
             return 0
-        return median([dep[wrap(p)] for p in range(a, b + 1)])
+        return median([dep[wrap1(p, m)] for p in range(a, b + 1)])
 
     def med_flank(dep, bp5, bp3, flank):
-        vals = [dep[wrap(p)] for p in range(bp5 - flank + 1, bp5 + 1)]
-        vals += [dep[wrap(p)] for p in range(bp3, bp3 + flank)]
+        vals = [dep[wrap1(p, m)] for p in range(bp5 - flank + 1, bp5 + 1)]
+        vals += [dep[wrap1(p, m)] for p in range(bp3, bp3 + flank)]
         return median(vals)
-
-    junctions = extract_junctions(args.bam, args.chrom, args.minmapq,
-                                  args.minsize, maxsize, args.pad, args.minsupport)
-    dep = per_base_depth(args.bam, args.chrom, m)
 
     fa = pysam.FastaFile(args.ref)
     seq = fa.fetch(args.chrom)
     fa.close()
 
+    junctions = extract_junctions(args.bam, args.chrom, args.minmapq,
+                                  args.minsize, maxsize, args.pad, args.minsupport, m)
+    dep = per_base_depth(args.bam, args.chrom, m)
+
     hp = load_bed_gz(args.hp)
     dloop = load_bed_gz(args.dloop)
     numt = load_vcf_pos(args.numt)
-
+    genes = load_genes(args.genes, args.chrom)
     rep = (args.rep5a, args.rep5b, args.rep3a, args.rep3b)
 
     vcf_records = []
@@ -242,31 +324,39 @@ def call(args):
         med_in = med_range(dep, bp5 + 1, bp3 - 1)
         med_fl = med_flank(dep, bp5, bp3, args.flank)
         ratio = med_in / med_fl if med_fl > 0 else 1.0
-        span = rnd((dep[wrap(bp5)] + dep[wrap(bp3)]) / 2.0)
+        span = rnd((dep[wrap1(bp5, m)] + dep[wrap1(bp3, m)]) / 2.0)
         sr = max(span - jr, 0)
         afj = jr / (jr + sr) if (jr + sr) > 0 else 0.0
         afc = max(0.0, min(1.0, 1.0 - ratio))
         afdiff = abs(afj - afc)
+        end = bp3 - 1
 
+        # breakpoint microhomology / direct repeat -> precision + class
+        homlen, homseq = microhomology(seq, bp5, bp3, m)
+        delclass = "I" if homlen >= 5 else ("II" if homlen >= 1 else "III")
+        gene_list = genes_in_deletion(genes, bp5 + 1, end)
+        svclaim = "DJ" if ratio <= args.drop else "J"   # both signals agree vs split-read-only
+        common = (near(bp5, COMMON_BP5[0], COMMON_BP5[1], args.pad)
+                  and near(bp3, COMMON_BP3[0], COMMON_BP3[1], args.pad)
+                  and COMMON_SVLEN[0] <= svlen <= COMMON_SVLEN[1])
+
+        # advisory breakpoint-region flags
         flags = []
-        repeat = (near(bp5, rep[0], rep[1], args.pad) or near(bp3, rep[2], rep[3], args.pad)
-                  or near(bp5, rep[2], rep[3], args.pad) or near(bp3, rep[0], rep[1], args.pad))
+        if (near(bp5, rep[0], rep[1], args.pad) or near(bp3, rep[2], rep[3], args.pad)
+                or near(bp5, rep[2], rep[3], args.pad) or near(bp3, rep[0], rep[1], args.pad)):
+            flags.append("REPEAT")
         wrapf = (bp5 <= args.originpad or bp5 >= m - args.originpad
                  or bp3 <= args.originpad or bp3 >= m - args.originpad)
-        inhp = in_iv(hp, bp5) or in_iv(hp, bp3)
-        indl = in_iv(dloop, bp5) or in_iv(dloop, bp3)
-        innumt = (bp5 in numt) or (bp3 in numt)
-        if repeat:
-            flags.append("REPEAT")
         if wrapf:
             flags.append("WRAP")
-        if inhp:
+        if in_iv(hp, bp5) or in_iv(hp, bp3):
             flags.append("HP")
-        if indl:
+        if in_iv(dloop, bp5) or in_iv(dloop, bp3):
             flags.append("DLOOP")
-        if innumt:
+        if (bp5 in numt) or (bp3 in numt):
             flags.append("NUMT")
 
+        # FILTER
         fil = []
         if jr < args.minjr:
             fil.append("lowJR")
@@ -279,33 +369,67 @@ def call(args):
         flt = ";".join(fil) if fil else "PASS"
 
         refbase = seq[bp5 - 1].upper() if 1 <= bp5 <= len(seq) else "N"
-        end = bp3 - 1
-        info = ("SM=%s;SVTYPE=DEL;END=%d;SVLEN=%d;JR=%d;SR=%d;AFJ=%.3f;AFC=%.3f;AFDIFF=%.3f;CVGR=%.3f"
-                % (args.sample, end, -svlen, jr, sr, afj, afc, afdiff, ratio))
-        for fl in flags:
-            info += ";" + fl
-        vcf_records.append("%s\t%d\t.\t%s\t<DEL>\t.\t%s\t%s\tGT:DP:AF\t0/1:%d:%.3f"
-                           % (args.chrom, bp5, refbase, flt, info, rnd(med_fl), afj))
-        tab_rows.append("%s\t%s\t%d\t%d\t%d\t%d\t%d\t%.3f\t%.3f\t%.3f\t%.3f\t%d\t%s\t%s"
-                        % (args.sample, args.chrom, bp5, bp3, svlen, jr, sr, afj, afc,
-                           afdiff, ratio, rnd(med_fl), flt, ",".join(flags) if flags else "."))
+        hgvs = "NC_012920.1:m.%d_%ddel" % (bp5 + 1, end)
 
-    write_vcf(args, vcf_records)
+        # INFO (site-level; sample identity is the genotype COLUMN, never an INFO field)
+        info = ["SVTYPE=DEL", "END=%d" % end, "SVLEN=%d" % (-svlen), "SVCLAIM=%s" % svclaim]
+        if homlen > 0:
+            info += ["IMPRECISE", "CIPOS=0,%d" % homlen, "CIEND=0,%d" % homlen]
+        info.append("HOMLEN=%d" % homlen)
+        if homseq:
+            info.append("HOMSEQ=%s" % homseq)
+        info.append("DELCLASS=%s" % delclass)
+        if gene_list:
+            info.append("GENE=%s" % ",".join(gene_list))
+        info.append("NGENE=%d" % len(gene_list))
+        if common:
+            info.append("COMMON")
+        info.append("HGVS=%s" % hgvs)
+        info += ["JR=%d" % jr, "SR=%d" % sr, "AFJ=%.3f" % afj, "AFC=%.3f" % afc,
+                 "AFDIFF=%.3f" % afdiff, "CVGR=%.3f" % ratio]
+        info += flags
+
+        fmt_val = "0/1:%d:%d,%d:%.3f:%d" % (rnd(med_fl), sr, jr, afj, jr)
+        vcf_records.append((bp5, "%s\t%d\t.\t%s\t<DEL>\t.\t%s\t%s\tGT:DP:AD:AF:SR\t%s"
+                            % (args.chrom, bp5, refbase, flt, ";".join(info), fmt_val)))
+
+        tab_rows.append("\t".join(str(x) for x in [
+            args.sample, args.chrom, bp5, end, svlen, svclaim, jr, sr,
+            "%.3f" % afj, "%.3f" % afc, "%.3f" % afdiff, "%.3f" % ratio, rnd(med_fl),
+            homlen, homseq, delclass, 1 if common else 0, len(gene_list),
+            ",".join(gene_list) if gene_list else ".", hgvs,
+            flt, ",".join(flags) if flags else "."]))
+
+    vcf_records.sort(key=lambda r: r[0])     # POS-sorted
+    write_vcf(args, [r[1] for r in vcf_records], seq)
     if args.tab:
         with open(args.tab, "w") as t:
-            t.write("#sample\tchrom\tbp5\tbp3\tsvlen\tJR\tSR\tAFJ\tAFC\tAFDIFF\tCVGR\tFLANKDP\tFILTER\tflags\n")
+            t.write("\t".join(TAB_COLUMNS) + "\n")
             for row in tab_rows:
                 t.write(row + "\n")
     sys.stderr.write("[callsv] %s -> %s (%d records)\n" % (args.sample, args.out, len(vcf_records)))
 
 
-def write_vcf(args, records):
+def write_vcf(args, records, seq):
+    """Emit a spec-correct VCFv4.2: dynamic provenance + contig/reference headers, the
+    static field definitions from the template, a #CHROM line whose genotype column is the
+    real sample name, then the records."""
     out = open(args.out, "w") if args.out else sys.stdout
-    with open(args.header) as h:
+    out.write("##fileformat=VCFv4.2\n")
+    out.write("##fileDate=%s\n" % datetime.date.today().strftime("%Y%m%d"))
+    out.write("##source=MitoHPC_callsv %s (pysam %s)\n" % (args.version or "dev", pysam.__version__))
+    out.write("##reference=file://%s\n" % os.path.abspath(args.ref))
+    out.write("##contig=<ID=%s,length=%d,md5=%s>\n" % (args.chrom, args.mtlen, fasta_md5(seq)))
+    out.write("##sample=%s\n" % args.sample)
+    out.write('##callsv_command="%s"\n' % " ".join(sys.argv))
+    for k in ("minmapq", "minjr", "minsize", "maxsize", "pad", "drop", "flank", "mindepth"):
+        out.write("##callsv_param_HP_SV_%s=%s\n" % (k.upper(), getattr(args, k)))
+    with open(args.header) as h:                  # static ##ALT/##FILTER/##INFO/##FORMAT
         for line in h:
-            if line.startswith("#CHROM"):
-                out.write("##sample=%s\n" % args.sample)
-            out.write(line)
+            line = line.rstrip("\n")
+            if line and not line.startswith("#CHROM"):
+                out.write(line + "\n")
+    out.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t%s\n" % args.sample)
     for rec in records:
         out.write(rec + "\n")
     if args.out:
@@ -334,6 +458,8 @@ def main():
     p.add_argument("--hp")
     p.add_argument("--numt")
     p.add_argument("--dloop")
+    p.add_argument("--genes", help="6-col BED(.gz) of mtDNA features for affected-gene annotation")
+    p.add_argument("--version", help="tool version string for the VCF ##source line")
     # Fixed v1 constants (callSV.sh does not expose these as HP_SV_*; the canonical defaults
     # live here, used for standalone/test invocation): cluster floor, origin guard, and the
     # del4977 13bp direct-repeat windows (m.8470-8482 / 13447-13459).
@@ -346,7 +472,7 @@ def main():
     args = p.parse_args()
     try:
         call(args)
-    except (ValueError, OSError) as e:
+    except (ValueError, OSError, KeyError) as e:   # KeyError: pysam FastaFile.fetch bad contig
         sys.exit("[callsv] ERROR: %s (bam=%s, ref=%s, chrom=%s)"
                  % (e, args.bam, args.ref, args.chrom))
 
