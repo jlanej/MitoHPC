@@ -1,0 +1,53 @@
+##fileformat=VCFv4.2
+##fileDate=20260619
+##source=MitoHPC_callsv (example output)
+##reference=file://./RefSeq/chrM.fa
+##contig=<ID=chrM,length=16569,md5=c68f52674c9fb33aef52dcf399755519>
+##sample=sv_del4977_h30
+##callsv_command="./scripts/callsv.py --bam ./test/sv/bams/sv_del4977_h30.bam --ref ./RefSeq/chrM.fa --header ./scripts/sv.vcf --sample sv_del4977_h30 --out ./out/out/sv_del4977_h30/sv_del4977_h30.sv.vcf --tab ./out/out/sv_del4977_h30/sv_del4977_h30.sv.tab --version efdaf48-dirty --chrom chrM --mtlen 16569 --minmapq 20 --minjr 3 --minsize 50 --maxsize 0 --pad 25 --drop 0.9 --flank 200 --mindepth 0 --hp ./RefSeq/HP.bed.gz --numt ./RefSeq/NUMT.vcf.gz --dloop ./RefSeq/DLOOP.bed.gz --genes ./RefSeq/genes.bed.gz"
+##callsv_param_HP_SV_MINMAPQ=20
+##callsv_param_HP_SV_MINJR=3
+##callsv_param_HP_SV_MINSIZE=50
+##callsv_param_HP_SV_MAXSIZE=0
+##callsv_param_HP_SV_PAD=25
+##callsv_param_HP_SV_DROP=0.9
+##callsv_param_HP_SV_FLANK=200
+##callsv_param_HP_SV_MINDEPTH=0
+##ALT=<ID=DEL,Description="Deletion">
+##FILTER=<ID=PASS,Description="Split-read junction corroborated by a coverage drop">
+##FILTER=<ID=lowJR,Description="Fewer than HP_SV_MINJR junction-supporting reads">
+##FILTER=<ID=no_cvg_drop,Description="medInside/medFlank above HP_SV_DROP (split-read only, no coverage corroboration)">
+##FILTER=<ID=WRAP,Description="Breakpoint near the artificial origin / origin-crossing; deletion-vs-duplication unresolved in v1">
+##FILTER=<ID=lowDP,Description="Flanking wild-type depth below threshold">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position: last deleted base (= POS + |SVLEN|)">
+##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Difference in length between REF and ALT alleles (negative for DEL; VCFv4.2 convention)">
+##INFO=<ID=SVCLAIM,Number=A,Type=String,Description="Evidence claim: J=junction/adjacency, D=read-depth/abundance, DJ=both">
+##INFO=<ID=IMPRECISE,Number=0,Type=Flag,Description="Imprecise breakpoint (ambiguous within a direct repeat / microhomology)">
+##INFO=<ID=CIPOS,Number=.,Type=Integer,Description="Confidence interval around POS for imprecise variants (offset pairs, each spanning 0)">
+##INFO=<ID=CIEND,Number=.,Type=Integer,Description="Confidence interval around END for imprecise variants (offset pairs, each spanning 0)">
+##INFO=<ID=HOMLEN,Number=.,Type=Integer,Description="Length of base-pair-identical microhomology / direct repeat at the breakpoints">
+##INFO=<ID=HOMSEQ,Number=.,Type=String,Description="Sequence of the breakpoint microhomology / direct repeat">
+##INFO=<ID=DELCLASS,Number=1,Type=String,Description="Breakpoint homology class: I=perfect direct repeat >=5bp, II=microhomology 1-4bp, III=no homology">
+##INFO=<ID=GENE,Number=.,Type=String,Description="mtDNA features overlapping the deletion, name:F (fully deleted) or name:P (partially)">
+##INFO=<ID=NGENE,Number=1,Type=Integer,Description="Number of mtDNA features overlapping the deletion">
+##INFO=<ID=COMMON,Number=0,Type=Flag,Description="Matches the MITOMAP common deletion del4977 (m.8470_13447, within tolerance)">
+##INFO=<ID=HGVS,Number=1,Type=String,Description="Approximate HGVS deletion span on rCRS/NC_012920.1">
+##INFO=<ID=JR,Number=1,Type=Integer,Description="Distinct junction-supporting split reads (site-level)">
+##INFO=<ID=SR,Number=1,Type=Integer,Description="Wild-type spanning reads at the breakpoints (coverage proxy; site-level spanning support, NOT the conventional split-read SR)">
+##INFO=<ID=AFJ,Number=1,Type=Float,Description="Junction-fraction heteroplasmy = JR/(JR+SR)">
+##INFO=<ID=AFC,Number=1,Type=Float,Description="Coverage-ratio heteroplasmy = 1 - medInside/medFlank">
+##INFO=<ID=AFDIFF,Number=1,Type=Float,Description="abs(AFJ-AFC) QC: large => amplification bias or DUP-as-DEL">
+##INFO=<ID=CVGR,Number=1,Type=Float,Description="medInside/medFlank coverage ratio">
+##INFO=<ID=REPEAT,Number=0,Type=Flag,Description="Breakpoint near the del4977 13bp direct repeat (m.8470-8482 / 13447-13459)">
+##INFO=<ID=NUMT,Number=0,Type=Flag,Description="Breakpoint overlaps a known NUMT-like site (RefSeq/NUMT.vcf.gz)">
+##INFO=<ID=HP,Number=0,Type=Flag,Description="Breakpoint inside a homopolymer run (RefSeq/HP.bed.gz)">
+##INFO=<ID=DLOOP,Number=0,Type=Flag,Description="Breakpoint in the control region / D-loop (RefSeq/DLOOP.bed.gz)">
+##INFO=<ID=WRAP,Number=0,Type=Flag,Description="Breakpoint near the artificial origin / origin-crossing">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Flanking wild-type read depth (round of medFlank)">
+##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths for the REF (spanning) and ALT (junction) alleles: SR,JR">
+##FORMAT=<ID=AF,Number=A,Type=Float,Description="Heteroplasmy (junction fraction AFJ)">
+##FORMAT=<ID=SR,Number=1,Type=Integer,Description="Split (junction) reads supporting the deletion (= JR; Manta-style per-sample split-read support)">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sv_del4977_h30
+chrM	8482	.	A	<DEL>	.	PASS	SVTYPE=DEL;END=13446;SVLEN=-4964;SVCLAIM=DJ;IMPRECISE;CIPOS=0,13;CIEND=0,13;HOMLEN=13;HOMSEQ=ACCTCCCTCACCA;DELCLASS=I;GENE=ATP8:P,ATP6:F,COX3:F,TRNG:F,ND3:F,TRNR:F,ND4L:F,ND4:F,TRNH:F,TRNS2:F,TRNL2:F,ND5:P;NGENE=12;COMMON;HGVS=NC_012920.1:m.8483_13446del;JR=133;SR=368;AFJ=0.265;AFC=0.254;AFDIFF=0.011;CVGR=0.746;REPEAT	GT:DP:AD:AF:SR	0/1:566:368,133:0.265:133

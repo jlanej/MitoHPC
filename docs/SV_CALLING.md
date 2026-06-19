@@ -232,7 +232,7 @@ dependency).
 > documented in **[`SV_METHODS.md`](SV_METHODS.md)**. The output is general VCF/SV best practice
 > (`##contig`/`##reference`/provenance, sample-named column, `HOMLEN`/`DELCLASS`/`CIPOS`, `SVCLAIM`,
 > affected `GENE`s, `COMMON`, `HGVS`, cohort `bcftools merge` recurrence matrix + sites union).
-> Evaluated by **16 checks** in `test/sv/` (`bash test/sv/run_test.sh`): the common deletion at
+> Evaluated by **20 checks** in `test/sv/` (`bash test/sv/run_test.sh`): the common deletion at
 > 30%/5%, a non-repeat deletion, **multiple concurrent deletions**, near-homoplasmy, **tandem
 > duplication and origin-crossing both correctly not PASSed**, a D-loop-flagged deletion, low
 > coverage, wild-type specificity, degenerate-input robustness (no tracebacks), cohort recurrence,

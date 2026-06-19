@@ -256,6 +256,11 @@ Separate from `getSummary.sh` (never touched). bgzip+tabix-indexes each per-samp
 - **`$ODIR/sv.merged.vcf.gz`** — `bcftools merge` cohort genotype matrix: one row per site, one
   column per sample, `NS` = number of samples carrying it (the **recurrence** substrate).
 - **`$ODIR/sv.sites.vcf.gz`** — sites-only union (`bcftools view -G`) for annotation (AnnotSV/VEP).
+- **`$ODIR/sv.report.html`** — a self-contained, offline **interactive report** (`svReport.py`,
+  vanilla SVG/JS, no dependencies): a circular mtDNA map + linear genome browser with gene /
+  OXPHOS-complex annotation, a per-position deletion-frequency track, VAF-coloured calls, live
+  filtering (PASS / VAF / class / common / sample), summary cards, VAF & size histograms, and a
+  recurrence table. Open it in any browser.
 
 (No single mixed-sample concatenated VCF is produced — different sample columns can't share one VCF;
 use the merged matrix or the long table. Exact-match merge can over-split imprecise breakpoints across
@@ -326,7 +331,7 @@ construction); `gen_bams.sh` aligns them through the pipeline's own circular pat
 (`minimap2 -ax sr → samtools view -F 0x90C → circSam.pl → sort`) to produce faithful `$O.bam`
 files (committed, ~13 MB total). `run_test.py` (invoked by `run_test.sh`) runs the caller and checks
 calls against `truth.tsv`, then exercises degenerate inputs and (when `bcftools` is present) cohort
-aggregation and a VCF-spec gate. **16 checks**:
+aggregation, a VCF-spec gate, and a schema check on the committed `example/` outputs. **20 checks**:
 
 | Scenario | What it verifies |
 |---|---|
@@ -400,6 +405,12 @@ SV caller no longer shells out to them.
 
 ## Changelog
 
+- **v1.3 (interactive cohort report):** `scripts/svReport.py` builds a self-contained, offline
+  interactive `sv.report.html` (circular mtDNA + linear genome browser, gene/OXPHOS-complex
+  annotation, per-position deletion-frequency map, VAF-coloured calls, live filtering, summary
+  stats, recurrence table); emitted by `getSVSummary.sh`. Committed example outputs under
+  `test/sv/example/` (per-sample VCF/tab, cohort VCFs, report) via `make_example.sh`. Test suite →
+  20 checks (adds `html_report` + 3 example-schema gates). No dependency beyond Python stdlib.
 - **v1.2 (best-practice output + cohort robustness):** rich, spec-correct VCF — `##contig`/
   `##reference`/provenance headers, **sample-named genotype column** (dropped `INFO/SM`),
   `HOMLEN`/`HOMSEQ`/`DELCLASS`/`IMPRECISE`/`CIPOS`/`CIEND` (breakpoint microhomology), `SVCLAIM`,

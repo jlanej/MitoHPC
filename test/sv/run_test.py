@@ -8,6 +8,7 @@ Self-contained: needs only python3 + pysam (the caller does everything in-proces
 Run:  bash test/sv/run_test.sh   (wrapper)   or   python3 test/sv/run_test.py
 """
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -229,6 +230,53 @@ def check_cohort(outdir, names):
     record("cohort_getSVSummary", ok and recur,
            "merge+sites valid, recurrence(NS>=2)=%s" % recur)
 
+    # the interactive HTML report (svReport.py; emitted by getSVSummary.sh)
+    rep = os.path.join(outdir, "sv.report.html")
+    rok = False
+    if os.path.exists(rep):
+        h = open(rep).read()
+        rok = ("/*__DATA__*/" not in h and 'id="circ"' in h and 'id="lin"' in h
+               and '"calls":' in h and len(h) > 5000)
+    record("html_report", rok, "self-contained interactive report" if rok else "missing/invalid")
+
+
+def check_examples(outdir):
+    """The committed example outputs (test/sv/example/) must reflect the CURRENT schema —
+    if the VCF/tab/report format changes, regenerate them: bash test/sv/make_example.sh."""
+    EX = os.path.join(HERE, "example")
+    if not os.path.isdir(EX):
+        print("\n[committed examples — SKIPPED (test/sv/example/ not present)]")
+        return
+    print("\n[committed examples — schema in sync with current code]")
+    rep = os.path.join(EX, "sv.report.html")
+    hok = os.path.exists(rep)
+    if hok:
+        h = open(rep).read()
+        hok = ("/*__DATA__*/" not in h and 'id="circ"' in h and 'id="lin"' in h
+               and '"calls":' in h and len(h) > 5000)
+    record("example_report", hok, "interactive report present + valid")
+
+    fresh_tab = os.path.join(outdir, "sv_del4977_h30.sv.tab")
+    ex_tab = os.path.join(EX, "sv.tab")
+    tok = (os.path.exists(fresh_tab) and os.path.exists(ex_tab)
+           and open(fresh_tab).readline().strip() == open(ex_tab).readline().strip())
+    record("example_tab_schema", tok,
+           "columns match" if tok else "DRIFT — run: bash test/sv/make_example.sh")
+
+    fresh_vcf = os.path.join(outdir, "sv_del4977_h30.sv.vcf")
+    ex_vcf = os.path.join(EX, "sv_del4977_h30.sv.vcf")
+    vok = False
+    if os.path.exists(fresh_vcf) and os.path.exists(ex_vcf):
+        ids = lambda p: set(re.findall(r"##INFO=<ID=([^,]+)", open(p).read()))
+        h = open(ex_vcf).read()
+        chrom_ok = any(l.startswith("#CHROM") and l.rstrip().endswith("sv_del4977_h30")
+                       for l in h.splitlines())
+        vok = (ids(fresh_vcf) == ids(ex_vcf)
+               and {"HOMLEN", "SVCLAIM", "GENE", "CIPOS", "DELCLASS"} <= ids(ex_vcf)
+               and chrom_ok and "##contig=" in h)
+    record("example_vcf_schema", vok,
+           "INFO/FORMAT + sample column match" if vok else "DRIFT — run: bash test/sv/make_example.sh")
+
 
 def check_vcf_spec(outdir):
     bcftools = shutil.which("bcftools")
@@ -258,6 +306,7 @@ def main():
         for name in sorted(samples):
             check_sample(name, samples[name], outdir)
         check_cohort(outdir, sorted(samples))
+        check_examples(outdir)
         check_degenerate(outdir)
         check_vcf_spec(outdir)
     finally:

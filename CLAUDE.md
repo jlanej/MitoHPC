@@ -205,17 +205,24 @@ When implementing, honor these rules (they operationalize §0):
   Invoked by the gated block in `filter.sh` (after the GRIDSS block, before the BAM `rm`).
 - `scripts/sv.vcf` — VCF header template (mirrors `gridss.vcf`).
 - `scripts/getSVSummary.sh` — cohort aggregator (tidy `$ODIR/sv.tab`, `bcftools merge` matrix
-  `$ODIR/sv.merged.vcf.gz` with `NS` recurrence, sites union `$ODIR/sv.sites.vcf.gz`); SEPARATE
-  from `getSummary.sh`, gated on `HP_SV`.
+  `$ODIR/sv.merged.vcf.gz` with `NS` recurrence, sites union `$ODIR/sv.sites.vcf.gz`, and the
+  interactive `$ODIR/sv.report.html`); SEPARATE from `getSummary.sh`, gated on `HP_SV`.
+- `scripts/svReport.py` — builds a **self-contained, offline, interactive HTML report** (vanilla
+  SVG/JS, no deps) from `sv.tab` + `genes.bed.gz`: circular mtDNA map + linear genome browser with
+  gene/OXPHOS-complex annotation, a per-position deletion-frequency track, VAF-coloured calls, live
+  filtering, summary stats, and a recurrence table.
 - Output is general VCF/SV best practice (NOT this repo's other VCFs): `##contig`/`##reference`/
   provenance headers, sample-named genotype column, `HOMLEN`/`HOMSEQ`/`DELCLASS`/`CIPOS`/`CIEND`,
   `SVCLAIM`, `COMMON`, `GENE`/`NGENE`, `HGVS`, `FORMAT GT:DP:AD:AF:SR`; VCF 4.2 (negative `SVLEN`).
 - Wiring: `HP_SV` + `HP_SV_*` tunables in `init.sh`; validation + exports + gated summary in
   `run.sh`; one gated block in `filter.sh`. With `HP_SV` empty the pipeline is unchanged.
-- Tests/mock data: **`test/sv/`** — `run_test.py` (via `run_test.sh`) runs 16 checks against
+- Tests/mock data: **`test/sv/`** — `run_test.py` (via `run_test.sh`) runs 20 checks against
   committed mock BAMs (`test/sv/bams/`, ~13 MB total): 10 scenarios (multi-deletion, near-homoplasmy,
   tandem-dup-not-called, origin-crossing, D-loop, low-coverage, …), degenerate inputs, cohort
-  recurrence, and a `bcftools` VCF-spec gate. See `test/sv/README.md`.
+  recurrence, a `bcftools` VCF-spec gate, and a schema check on the committed example outputs.
+- Committed example outputs: **`test/sv/example/`** — a representative per-sample VCF/tab, the cohort
+  `sv.tab`/`sv.merged.vcf.gz`/`sv.sites.vcf.gz`, and the interactive `sv.report.html`; regenerate with
+  `test/sv/make_example.sh` (paths sanitized to repo-relative). See `test/sv/README.md`.
 
 ## 6. Conventions
 

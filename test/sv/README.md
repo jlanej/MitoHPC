@@ -11,8 +11,10 @@ Self-contained, real-time evaluation of the MitoHPC structural-variant caller
 | `truth.tsv` | ✅ | Ground truth per (sample, event): `sample kind bp5 bp3 svlen het depth` |
 | `make_testdata.py` | ✅ | Read simulator: WT + per-event circular genomes (deletion / duplication / origin-crossing) → FASTQ |
 | `gen_bams.sh` | ✅ | Aligns FASTQ → BAM through the pipeline's circular path (minimap2 → `circSam.pl` → sort) |
-| `run_test.py` | ✅ | The harness (python3 + pysam): scenarios vs `truth.tsv`, degenerate inputs, cohort, VCF-spec gate |
+| `run_test.py` | ✅ | The harness (python3 + pysam): scenarios vs `truth.tsv`, degenerate inputs, cohort, VCF-spec gate, example-schema check |
 | `run_test.sh` | ✅ | Thin wrapper → `run_test.py` |
+| `example/` | ✅ | Committed example outputs (per-sample VCF/tab, cohort VCFs, `sv.report.html`) — a "taste" of what the module emits. See `example/README.md` |
+| `make_example.sh` | ✅ | Regenerates `example/` from the mock BAMs (paths sanitized to repo-relative) |
 | `fastq/`, `out/` | ❌ (gitignored) | Regenerable intermediates |
 
 ## Samples (10) + robustness checks

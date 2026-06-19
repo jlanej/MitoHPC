@@ -58,4 +58,12 @@ tabix -p vcf -f "$ODIR/sv.merged.vcf.gz"
 bcftools view -G -Oz -o "$ODIR/sv.sites.vcf.gz" "$ODIR/sv.merged.vcf.gz"
 tabix -p vcf -f "$ODIR/sv.sites.vcf.gz"
 
-echo "[getSVSummary] wrote $ODIR/{sv.tab, sv.merged.vcf.gz, sv.sites.vcf.gz}" >&2
+# (4) interactive, self-contained HTML report (svReport.py is stdlib-only — no pysam needed)
+RDIR=${HP_RDIR:-$(cd "$SDIR/../RefSeq" && pwd)}
+N=$(grep -vc '^#' "$HP_IN")
+gopt=""; [ -s "$RDIR/genes.bed.gz" ] && gopt="--genes $RDIR/genes.bed.gz"
+"${HP_PYTHON:-python3}" "$SDIR/svReport.py" --tab "$ODIR/sv.tab" --nsamples "$N" \
+  --mtlen "${HP_MTLEN:-16569}" --chrom "${HP_MT:-chrM}" $gopt --out "$ODIR/sv.report.html" \
+  || echo "[getSVSummary] WARN: HTML report generation failed" >&2
+
+echo "[getSVSummary] wrote $ODIR/{sv.tab, sv.merged.vcf.gz, sv.sites.vcf.gz, sv.report.html}" >&2
