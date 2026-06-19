@@ -16,6 +16,7 @@ test -s $HP_IN
 if [ $HP_I != "0" ]       && [ $HP_I != "1" ]        && [ $HP_I != "2" ] ;         then  echo "Incorrect HP_I parameter" > /dev/stderr ; exit 1 ; fi
 if [ $HP_M != "mutect2" ] && [ $HP_M != "mutserve" ] && [ $HP_M != "freebayes" ] ; then  echo "Incorrect HP_M parameter" > /dev/stderr ; exit 1 ; fi
 if [ $HP_V ] && [ $HP_V != "gridss" ] ;                                            then  echo "Incorrect HP_V parameter" > /dev/stderr ; exit 1 ; fi
+if [ $HP_SV ] && [ $HP_SV != "callsv" ] ;                                          then  echo "Incorrect HP_SV parameter" > /dev/stderr ; exit 1 ; fi
 
 #check THOLDs
 perl -e '!$ENV{HP_T1} or $ENV{HP_T1}=~/^\d\d$/ or die "ERROR : HP_T1 between 00 and 99\n"'
@@ -64,6 +65,14 @@ printf "export HP_T2=$HP_T2\n"
 printf "export HP_T3=$HP_T3\n"
 
 printf "export HP_V=$HP_V\n"
+printf "export HP_SV=$HP_SV\n"
+printf "export HP_SV_MINJR=$HP_SV_MINJR\n"
+printf "export HP_SV_MINMAPQ=$HP_SV_MINMAPQ\n"
+printf "export HP_SV_MINSIZE=$HP_SV_MINSIZE\n"
+printf "export HP_SV_PAD=$HP_SV_PAD\n"
+printf "export HP_SV_DROP=$HP_SV_DROP\n"
+printf "export HP_SV_FLANK=$HP_SV_FLANK\n"
+printf "export HP_SV_MINDP=$HP_SV_MINDP\n"
 printf "export HP_DP=$HP_DP\n"
 
 printf "export HP_FRULE=\"$HP_FRULE\"\n"
@@ -82,4 +91,5 @@ grep -v "^#" $HP_IN | sed "s|^|$HP_SH $HP_SDIR/filter.sh |"
 
 printf "\n"
 printf "$HP_SHS $HP_SDIR/getSummary.sh $HP_ODIR\n"
+if [ $HP_SV ] ; then printf "$HP_SHS $HP_SDIR/getSVSummary.sh $HP_ODIR\n" ; fi
 

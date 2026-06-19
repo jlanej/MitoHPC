@@ -1,0 +1,7 @@
+# regenerable intermediates (not committed)
+fastq/
+out/
+*.sv.dp
+*.sv.jun
+__pycache__/
+*.pyc

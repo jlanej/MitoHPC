@@ -170,6 +170,15 @@ if [ $HP_V ] && [ "$HP_V" == "gridss" ] ; then
   fi
 fi
 
+#########################################################################################################################################
+#  identify large deletions (standalone SV module; additive; default off; runs while $O.bam is still alive)
+
+if [ $HP_SV ] && [ "$HP_SV" == "callsv" ] ; then
+  if [ ! -s $O.sv.vcf ] ; then
+    callSV.sh $S $O.bam $O
+  fi
+fi
+
 ########################################################################################################################################
 # get haplogroup
 

@@ -1,0 +1,27 @@
+##fileformat=VCFv4.2
+##source=MitoHPC_callSV
+##ALT=<ID=DEL,Description="Deletion">
+##FILTER=<ID=PASS,Description="Split-read junction corroborated by a coverage drop">
+##FILTER=<ID=lowJR,Description="Fewer than HP_SV_MINJR junction-supporting reads">
+##FILTER=<ID=no_cvg_drop,Description="medInside/medFlank above HP_SV_DROP (split-read only, no coverage corroboration)">
+##FILTER=<ID=WRAP,Description="Breakpoint near the artificial origin; deletion-vs-duplication unresolved in v1">
+##FILTER=<ID=lowDP,Description="Flanking wild-type depth below threshold">
+##INFO=<ID=SM,Number=1,Type=String,Description="Sample">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">
+##INFO=<ID=END,Number=1,Type=Integer,Description="Last deleted base (bp3-1)">
+##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Deletion length (negative)">
+##INFO=<ID=JR,Number=1,Type=Integer,Description="Junction-supporting split reads">
+##INFO=<ID=SR,Number=1,Type=Integer,Description="Wild-type spanning reads (coverage proxy)">
+##INFO=<ID=AFJ,Number=1,Type=Float,Description="Heteroplasmy from junction fraction JR/(JR+SR)">
+##INFO=<ID=AFC,Number=1,Type=Float,Description="Heteroplasmy from coverage ratio 1-medInside/medFlank">
+##INFO=<ID=AFDIFF,Number=1,Type=Float,Description="abs(AFJ-AFC) QC: large => amplification bias or DUP-as-DEL">
+##INFO=<ID=CVGR,Number=1,Type=Float,Description="medInside/medFlank coverage ratio">
+##INFO=<ID=REPEAT,Number=0,Type=Flag,Description="Breakpoint near the del4977 13bp direct repeat (m.8470-8482 / 13447-13459)">
+##INFO=<ID=NUMT,Number=0,Type=Flag,Description="Breakpoint overlaps a known NUMT-like site">
+##INFO=<ID=HP,Number=0,Type=Flag,Description="Breakpoint overlaps a homopolymer run">
+##INFO=<ID=DLOOP,Number=0,Type=Flag,Description="Breakpoint in the control region (D-loop)">
+##INFO=<ID=WRAP,Number=0,Type=Flag,Description="Breakpoint near the artificial origin">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Flanking wild-type read depth">
+##FORMAT=<ID=AF,Number=A,Type=Float,Description="Heteroplasmy (=AFJ, junction fraction)">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	SAMPLE
