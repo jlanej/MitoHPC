@@ -14,7 +14,10 @@ ENV PATH="$HP_SDIR:$HP_BDIR:$PATH"
 ###########################################
 
 RUN apt-get -y update
-RUN apt-get install -y wget tar nano curl git
+# minimap2: used by test/sv/gen_bams.sh to (re)generate the SV mock BAMs in-image.
+# The SV caller itself needs only samtools/bedtools/perl (installed below); the
+# committed mock BAMs let test/sv/run_test.sh run without minimap2.
+RUN apt-get install -y wget tar nano curl git minimap2
 COPY . /MitoHPC/
 ###########################################
 RUN \

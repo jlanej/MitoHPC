@@ -1,0 +1,27 @@
+name: SV caller test
+
+# Fast, image-independent gate: runs the structural-variant caller against the
+# committed mock BAMs (test/sv/) on the runner. Complements the in-image smoke
+# test in docker-publish.yml — this gives quick feedback even if the full image
+# build is slow or a download is flaky.
+
+on:
+  push:
+    branches: [ "main", "sv-calling" ]
+  pull_request:
+    branches: [ "main", "sv-calling" ]
+
+jobs:
+  sv-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies (samtools; perl/awk/gzip are preinstalled)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y samtools
+
+      - name: Run SV caller against mock data
+        run: bash test/sv/run_test.sh
