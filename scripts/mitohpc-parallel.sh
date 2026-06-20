@@ -50,30 +50,43 @@ fi
 # Source init.sh to get all HP_ variables
 . $HP_SDIR/init.sh
 
+# Budget per-sample CPU/RAM (HP_P threads, HP_MM sort buffer, HP_JOPT java -Xmx) against the
+# *shared* machine so that NUM_THREADS concurrent samples actually fit — otherwise each sample
+# inherits init.sh's per-sample defaults (HP_P=nproc, fixed 2G/thread) and N of them together
+# oversubscribe CPU and RAM. Sourced AFTER init.sh so it overrides without editing init.sh.
+# Guarded: older images lacking this file fall back to init.sh defaults instead of aborting.
+if [ -r "$HP_SDIR/resource_budget.sh" ]; then
+    . $HP_SDIR/resource_budget.sh
+    resource_budget "$NUM_THREADS"
+fi
+
 echo "MitoHPC parallel configuration:"
 echo "  Per-sample threads (HP_P): $HP_P"
 echo "  Parallel sample processing threads: $NUM_THREADS"
 echo "  Total potential thread usage: $((HP_P * NUM_THREADS))"
 
-# If total thread usage seems excessive, warn the user
-TOTAL_CORES=$(nproc 2>/dev/null || echo 4)
-POTENTIAL_THREADS=$((HP_P * NUM_THREADS))
-if [ $POTENTIAL_THREADS -gt $((TOTAL_CORES * 2)) ]; then
-    echo "Warning: Potential thread oversubscription detected!"
-    echo "  Available cores: $TOTAL_CORES"
-    echo "  Potential threads: $POTENTIAL_THREADS"
-    echo "  Consider reducing NUM_THREADS or setting HP_P to a lower value"
-fi
-
 # Generate input file if it doesn't exist
 if [ ! -s "$HP_IN" ]; then
     echo "Generating input file: $HP_IN"
-    find $HP_ADIR/ -name "*.bam" -o -name "*.cram" -readable | ls2in.pl -out $HP_ODIR | sort -V > $HP_IN
+    # Group the -name alternation so -readable applies to BOTH bam and cram (un-grouped, find's
+    # AND-precedence binds -readable to the cram branch only, letting unreadable BAMs slip in).
+    find "$HP_ADIR/" \( -name "*.bam" -o -name "*.cram" \) -readable | ls2in.pl -out "$HP_ODIR" | sort -V > "$HP_IN"
 fi
 
 # Check if input file has samples
 if [ ! -s "$HP_IN" ]; then
     echo "Error: No BAM/CRAM files found in $HP_ADIR" >&2
+    exit 1
+fi
+
+# Security: run.sh emits each per-sample command as SHELL TEXT that parallel/xargs re-parse, so a
+# sample name or path with shell metacharacters (or a space, which also breaks ls2in.pl's field
+# split) could inject or corrupt commands. Reject anything outside a conservative safe set up
+# front. (tr makes the tab field-separator a newline so spaces inside a field are still caught.)
+if tr '\t' '\n' < "$HP_IN" | LC_ALL=C grep -qE '[^[:alnum:]._/:+,@%=-]'; then
+    echo "Error: $HP_IN has a sample name/path with unsafe characters (shell metacharacters or spaces):" >&2
+    tr '\t' '\n' < "$HP_IN" | LC_ALL=C grep -E '[^[:alnum:]._/:+,@%=-]' | sed 's/^/    /' >&2
+    echo "Rename the offending file(s) to use only [A-Za-z0-9._/:+,@%=-] and re-run." >&2
     exit 1
 fi
 
@@ -124,19 +137,22 @@ export HP_SDIR HP_ODIR HP_IN
 echo "Starting parallel processing..."
 START_TIME=$(date +%s)
 
-run_parallel
-
-FILTER_EXIT_CODE=$?
+# Capture the real exit status: under `set -e` a bare `run_parallel` would abort the script
+# on failure before we could read $?, so guard it with `|| ...` (which set -e treats as handled).
+FILTER_EXIT_CODE=0
+run_parallel || FILTER_EXIT_CODE=$?
 
 if [ $FILTER_EXIT_CODE -eq 0 ]; then
     echo "Parallel processing completed successfully"
-    
-    # Run the summary script (this needs to run after all samples are processed)
+
+    # Run the summary script (this needs to run after all samples are processed).
+    # "Summary.sh" matches getSummary.sh (and getSVSummary.sh if ever emitted); `|| echo ""`
+    # keeps a no-match grep from aborting under set -e.
     echo "Generating summary..."
-    SUMMARY_CMD=$(grep "getSummary.sh" run.all.sh)
+    SUMMARY_CMD=$(grep "Summary.sh" run.all.sh || echo "")
     if [ -n "$SUMMARY_CMD" ]; then
-        eval "$SUMMARY_CMD"
-        SUMMARY_EXIT_CODE=$?
+        SUMMARY_EXIT_CODE=0
+        eval "$SUMMARY_CMD" || SUMMARY_EXIT_CODE=$?
         if [ $SUMMARY_EXIT_CODE -eq 0 ]; then
             echo "Summary generation completed successfully"
         else

@@ -24,7 +24,7 @@ set -e
 # Parse arguments
 WORKING_DIR="$1"
 NUM_THREADS="${2:-$(nproc 2>/dev/null || echo 4)}"
-CONTAINER_IMAGE="${3:-docker://ghcr.io/jlanej/mitohpc:sv-calling}"
+CONTAINER_IMAGE="${3:-docker://ghcr.io/jlanej/mitohpc:main}"
 
 # Structural-variant (large-deletion) calling is ON by default (HP_SV=callsv); it writes
 # additional *.sv.* outputs and never changes the existing deliverables. To disable, set
@@ -39,13 +39,15 @@ Usage: $0 <working_directory> [num_threads] [container_image]
 Arguments:
     working_directory    Directory containing BAM/CRAM files (equivalent to groupCram)
     num_threads         Number of parallel threads to use (default: auto-detect CPU cores)
-    container_image     Container image to use (default: docker://ghcr.io/jlanej/mitohpc:sv-calling)
+    container_image     Container image to use (default: docker://ghcr.io/jlanej/mitohpc:main)
 
 Structural-variant (large-deletion) calling is ON by default (HP_SV=callsv); it adds
-*.sv.* outputs without changing existing results. Disable with: HP_SV= $0 <dir> ...
+*.sv.* outputs without changing existing results, and is SKIPPED with a warning if the
+image's python lacks pysam (e.g. the :main image until the SV branch is merged + rebuilt).
+Use the :sv-calling image (3rd arg) to run it, or disable with: HP_SV= $0 <dir> ...
 
 Example:
-    $0 /data/samples 4 "docker://ghcr.io/jlanej/mitohpc:sv-calling"
+    $0 /data/samples 4 "docker://ghcr.io/jlanej/mitohpc:main"
 
 This script expects the working directory to contain:
     bams/           - Directory with BAM files, OR
@@ -104,21 +106,18 @@ if [ ! -d "$WORKING_DIR/bams" ] && [ ! -d "$WORKING_DIR/crams" ]; then
     exit 1
 fi
 
-# Determine data directory
-DATA_DIR="bams"
-# if [ -d "$WORKING_DIR/bams" ]; then
-#     DATA_DIR="bams"
-#     if ! find "$WORKING_DIR/bams" -name "*.bam" | head -1 | grep -q .; then
-#         echo "Error: No BAM files found in $WORKING_DIR/bams" >&2
-#         exit 1
-#     fi
-# elif [ -d "$WORKING_DIR/crams" ]; then
-#     DATA_DIR="crams"
-#     if ! find "$WORKING_DIR/crams" -name "*.cram" | head -1 | grep -q .; then
-#         echo "Error: No CRAM files found in $WORKING_DIR/crams" >&2
-#         exit 1
-#     fi
-# fi
+# Determine data directory: prefer a populated bams/, else a populated crams/. crams/ is a
+# documented input, so it must NOT be hardcoded to bams (a crams-only working dir would
+# otherwise look at a nonexistent bams/ and find zero inputs).
+if [ -d "$WORKING_DIR/bams" ] && find "$WORKING_DIR/bams" -name "*.bam" 2>/dev/null | head -1 | grep -q .; then
+    DATA_DIR="bams"
+elif [ -d "$WORKING_DIR/crams" ] && find "$WORKING_DIR/crams" -name "*.cram" 2>/dev/null | head -1 | grep -q .; then
+    DATA_DIR="crams"
+elif [ -d "$WORKING_DIR/bams" ]; then
+    DATA_DIR="bams"   # exists but empty — let the input-list step below report the error
+else
+    DATA_DIR="crams"
+fi
 
 echo "MitoHPC Batch Container Processing"
 echo "=================================="
@@ -129,8 +128,8 @@ echo "Container image: $CONTAINER_IMAGE"
 echo "SV calling (HP_SV): ${SV_MODE:-off (disabled)}"
 echo
 
-# Count input files
-FILE_COUNT=$(find "$WORKING_DIR/$DATA_DIR" -name "*.bam" -o -name "*.cram" | wc -l)
+# Count input files (group the -name alternation so any future trailing predicate binds to both)
+FILE_COUNT=$(find "$WORKING_DIR/$DATA_DIR" \( -name "*.bam" -o -name "*.cram" \) | wc -l)
 echo "Found $FILE_COUNT input files to process"
 
 # Create output directory
@@ -140,8 +139,14 @@ mkdir -p "$WORKING_DIR/out"
 # We'll use a modified approach that processes samples in parallel within the container
 echo "Starting parallel processing..."
 
-# Create a temporary script that will run inside the container
-TEMP_SCRIPT="$WORKING_DIR/run_parallel_mitohpc.sh"
+# Create the in-container runner. Use mktemp (atomic O_EXCL create, mode 0600) with a UNIQUE
+# name rather than a predictable, world-readable path in the shared working dir: this closes a
+# symlink/TOCTOU hijack of the script we then chmod +x and execute, and stops two concurrent
+# runs in the same workdir from clobbering each other's runner. The trap removes it on
+# exit/signal/failure — not only on the happy path. (It still lives under $WORKING_DIR so the
+# existing --bind makes it visible in the container.)
+TEMP_SCRIPT=$(mktemp "$WORKING_DIR/.run_parallel_mitohpc.XXXXXX.sh")
+trap 'rm -f "$TEMP_SCRIPT"' EXIT INT TERM
 cat > "$TEMP_SCRIPT" << 'EOF'
 #!/usr/bin/env bash
 set -e
@@ -149,19 +154,48 @@ set -e
 NUM_THREADS="$1"
 
 # Source the MitoHPC initialization.
-# init.sh resets HP_SV to its default, so capture the value passed in via --env first and
-# restore it afterwards — this keeps structural-variant calling enabled for run.sh/filter.sh
-# (the parallel filter.sh jobs below inherit this environment).
+# init.sh unconditionally re-exports HP_SV (to its default) AND HP_ADIR (to $PWD/bams/),
+# clobbering the values we passed via --env. Capture both first and restore them afterwards:
+# keeps structural-variant calling enabled, and — crucially — keeps HP_ADIR=crams for a
+# crams-only run (otherwise init.sh forces bams/ and the input find below returns nothing).
 HP_SV_REQ="${HP_SV:-}"
+HP_ADIR_REQ="${HP_ADIR:-}"
 . $HP_SDIR/init.sh
 export HP_SV="$HP_SV_REQ"
+[ -n "$HP_ADIR_REQ" ] && export HP_ADIR="$HP_ADIR_REQ"
+
+# Budget per-sample CPU/RAM (HP_P threads, HP_MM sort buffer, HP_JOPT java -Xmx) for the
+# NUM_THREADS samples we run concurrently below. resource_budget is cgroup-aware, so inside
+# the container it sees the real CPU/RAM limits (not just the host's nproc) and divides them
+# across the concurrent samples. Sourced AFTER init.sh so it overrides the per-sample defaults
+# without editing init.sh. An explicit --env HP_P (if forwarded) is respected as a cap.
+# Guarded: older images (e.g. :main before this branch is merged + rebuilt) lack this file —
+# degrade to init.sh's per-sample defaults rather than aborting the run under `set -e`.
+if [ -r "$HP_SDIR/resource_budget.sh" ]; then
+    . $HP_SDIR/resource_budget.sh
+    resource_budget "$NUM_THREADS"
+else
+    echo "[mitohpc] note: resource_budget.sh not in image; using init.sh per-sample defaults (HP_P=$HP_P)" >&2
+fi
 
 # Generate input file
 echo "Generating input file list..."
-find $HP_ADIR/ -name "*.bam" -o -name "*.cram" -readable | ls2in.pl -out $HP_ODIR | sort -V > $HP_IN
+find "$HP_ADIR/" \( -name "*.bam" -o -name "*.cram" \) -readable | ls2in.pl -out "$HP_ODIR" | sort -V > "$HP_IN"
 
 if [ ! -s "$HP_IN" ]; then
     echo "Error: No input files found" >&2
+    exit 1
+fi
+
+# Security: run.sh emits each per-sample command as SHELL TEXT that parallel/xargs re-parse, so
+# a sample name or path containing shell metacharacters (or a space, which also breaks ls2in.pl's
+# field split) could inject or corrupt commands. Reject anything outside a conservative safe set
+# up front — mtDNA BAM/CRAM names never need these. (tr makes the tab field-separator a newline
+# so spaces inside a field are still caught.)
+if tr '\t' '\n' < "$HP_IN" | LC_ALL=C grep -qE '[^[:alnum:]._/:+,@%=-]'; then
+    echo "Error: $HP_IN has a sample name/path with unsafe characters (shell metacharacters or spaces):" >&2
+    tr '\t' '\n' < "$HP_IN" | LC_ALL=C grep -E '[^[:alnum:]._/:+,@%=-]' | sed 's/^/    /' >&2
+    echo "Rename the offending file(s) to use only [A-Za-z0-9._/:+,@%=-] and re-run." >&2
     exit 1
 fi
 
@@ -197,34 +231,30 @@ EOF
 
 chmod +x "$TEMP_SCRIPT"
 
-# Calculate appropriate HP_P value to prevent resource conflicts
-# If HP_P is not explicitly set by the user, we should set it to a reasonable value
-# to prevent each parallel job from trying to use all available cores
-TOTAL_CORES=$(nproc 2>/dev/null || echo 4)
-if [ -z "$HP_P" ]; then
-    # Calculate threads per sample: max(1, total_cores / num_parallel_samples)
-    # This ensures each sample gets a fair share without oversubscription
-    HP_P_CALCULATED=$((TOTAL_CORES / NUM_THREADS))
-    if [ $HP_P_CALCULATED -lt 1 ]; then
-        HP_P_CALCULATED=1
-    fi
-    HP_P_ENV="HP_P=$HP_P_CALCULATED"
-    echo "Setting HP_P=$HP_P_CALCULATED threads per sample (total cores: $TOTAL_CORES, parallel samples: $NUM_THREADS)"
+# Per-sample resource budgeting (HP_P threads, java -Xmx, samtools sort -m) is computed INSIDE
+# the container by scripts/resource_budget.sh, which is cgroup-aware: it reads the container's
+# real CPU/RAM limits (not just the host's nproc) and divides them across the NUM_THREADS
+# concurrent samples, bounding aggregate CPU and RAM. Here we only forward an explicit user
+# HP_P override (respected, but capped to a safe share); otherwise the budget is auto-derived.
+HP_P_ENV=""
+if [ -n "${HP_P:-}" ]; then
+    HP_P_ENV=",HP_P=$HP_P"
+    echo "Forwarding user-specified HP_P=$HP_P (resource_budget will cap it to a safe per-sample share)"
 else
-    HP_P_ENV="HP_P=$HP_P"
-    echo "Using user-specified HP_P=$HP_P threads per sample"
+    echo "Per-sample resources will be auto-budgeted inside the container for $NUM_THREADS concurrent samples"
 fi
 
 # Run the container with parallel processing
 echo "Executing MitoHPC container..."
+# Capture the real exit status: under `set -e` a bare failing apptainer call would abort this
+# script before we could read $? (making the error branch below dead). Guard with `|| ...`.
+CONTAINER_EXIT_CODE=0
 apptainer exec \
     --bind "$WORKING_DIR":"$WORKING_DIR" \
     --pwd "$WORKING_DIR" \
-    --env HP_ADIR="$DATA_DIR",HP_ODIR=out,HP_IN=in.txt,"$HP_P_ENV",HP_SV="$SV_MODE" \
+    --env HP_ADIR="$DATA_DIR",HP_ODIR=out,HP_IN=in.txt,HP_SV="$SV_MODE"$HP_P_ENV \
     "$CONTAINER_IMAGE" \
-    ./run_parallel_mitohpc.sh "$NUM_THREADS"
-
-CONTAINER_EXIT_CODE=$?
+    "./$(basename "$TEMP_SCRIPT")" "$NUM_THREADS" || CONTAINER_EXIT_CODE=$?
 
 # Clean up temporary script
 rm -f "$TEMP_SCRIPT"
@@ -240,11 +270,15 @@ if [ $CONTAINER_EXIT_CODE -eq 0 ]; then
     echo "  - Coverage statistics"
     echo "  - Summary reports"
     
-    # Show some basic stats if available
-    if [ -f "$WORKING_DIR/out/"*.summary ]; then
+    # Show some basic stats if available. Use a nullglob-guarded array: `[ -f "$dir/"*.summary ]`
+    # breaks when the glob matches multiple files (too many args to -f) or matches none.
+    shopt -s nullglob
+    SUMMARY_FILES=("$WORKING_DIR/out/"*.summary)
+    shopt -u nullglob
+    if [ ${#SUMMARY_FILES[@]} -gt 0 ]; then
         echo
         echo "Summary files created:"
-        ls -la "$WORKING_DIR/out/"*.summary 2>/dev/null || true
+        ls -la "${SUMMARY_FILES[@]}"
     fi
 else
     echo "❌ MitoHPC batch processing failed with exit code $CONTAINER_EXIT_CODE" >&2

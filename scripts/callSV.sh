@@ -27,6 +27,13 @@ MT=${HP_MT:-chrM}
 MTLEN=${HP_MTLEN:-16569}
 PY=${HP_PYTHON:-python3}            # override to point at a python that has pysam
 
+# Degrade gracefully if pysam is unavailable (e.g. the :main image): skip SV calling with a
+# warning rather than aborting the whole per-sample run. Existing (SNV/CN) outputs are unaffected.
+if ! "$PY" -c 'import pysam' >/dev/null 2>&1; then
+  echo "[callSV] WARNING: '$PY' has no pysam — skipping SV calling for $S (use the sv-calling image or install pysam)" >&2
+  exit 0
+fi
+
 # tunables (defaults chosen for ~2000x subsampled chrM; override via init.sh)
 MINMAPQ=${HP_SV_MINMAPQ:-20}    # min MAPQ for split reads (drops NUMT multi-mappers)
 MINJR=${HP_SV_MINJR:-3}         # min junction-supporting reads for PASS
