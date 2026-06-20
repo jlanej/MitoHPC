@@ -210,7 +210,12 @@ grep "filter.sh" run.all.sh > filter.commands.sh
 
 echo "Running parallel processing..."
 if command -v parallel > /dev/null 2>&1; then
-    parallel -j "$NUM_THREADS" --progress < filter.commands.sh
+    # GNU parallel's --progress draws on /dev/tty; with no controlling terminal (apptainer under
+    # a scheduler, nohup, redirected output) it spams "cannot open /dev/tty". Enable it only when
+    # a tty is actually writable; always keep --joblog for post-run per-sample status (no tty needed).
+    PARALLEL_OPTS="--joblog parallel.log"
+    if { : > /dev/tty; } 2>/dev/null; then PARALLEL_OPTS="$PARALLEL_OPTS --progress"; fi
+    parallel -j "$NUM_THREADS" $PARALLEL_OPTS < filter.commands.sh
 elif command -v xargs > /dev/null 2>&1; then
     cat filter.commands.sh | xargs -I {} -P "$NUM_THREADS" bash -c '{}'
 else
