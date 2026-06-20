@@ -11,6 +11,118 @@
 
 ---
 
+## 0. Methods abstract — two levels (for reviewers / grant text)
+
+Two self-contained descriptions of the method, written to be lifted directly into a manuscript or
+grant. **Level 1** gives a genomics reader the idea in a few sentences; **Level 2** is a dense,
+parameterized methods paragraph for a preliminary-data / methods section. Everything below is
+expanded, with code references, in §§1–10.
+
+### Level 1 — intuitive (the idea in a paragraph)
+
+We detect **large mitochondrial deletions** directly from the circular-aware chrM alignment that
+MitoHPC already builds for SNV/heteroplasmy and copy-number estimation, so no additional alignment
+is required. A true deletion leaves **two complementary signatures** in short-read data, and we
+require **both**: (i) *split reads* — a read crossing the deletion junction aligns to the wild-type
+reference in two pieces, the second recorded as a supplementary-alignment (`SA:Z`) tag, pinning the
+two breakpoints (bp5 → bp3) to base-pair resolution; and (ii) a *coverage drop* — only wild-type
+molecules cover the deleted span, so read depth falls across it in proportion to the mutant
+fraction. We extract split-read junctions, cluster the reads that support the same breakpoint pair,
+and call a deletion **only when a clustered junction and a corroborating coverage drop coincide** —
+the split-read + read-depth corroboration principle of general-purpose SV callers
+(DELLY/LUMPY/Manta), specialized to the small, high-copy, **circular** mitochondrial genome.
+Heteroplasmy (mutant fraction) is estimated **two complementary ways** — from the junction-read
+fraction and from the coverage ratio; because both ultimately read out the same breakpoint depth,
+their agreement is reported as a consistency QC metric rather than a fully independent confirmation.
+Because the underlying alignment is made against a *circularized* reference (the first 300 bp
+re-appended), deletions spanning the artificial linear origin are represented as split alignments
+and handled natively, without ad-hoc linearization. v1 targets large single deletions; duplications,
+inversions, insertions, and true small origin-crossing deletions are out of scope (the former two
+appear only as negative controls — see Level 2).
+
+### Level 2 — grant-ready methods (preliminary data)
+
+*Mitochondrial large-deletion calling.* Large mtDNA deletions are called by a purpose-built
+module (`callsv.py`; Python 3 / `pysam`) operating on the circularized, deduplicated, subsampled
+chrM alignment produced by MitoHPC's existing realignment (reads mapped to a chrM reference extended
+by 300 bp so origin-spanning reads map contiguously; rCRS/NC_012920.1, 16,569 bp). The caller
+integrates two complementary lines of evidence. *(i) Split-read junctions:* for each primary alignment
+with mapping quality ≥ 20 (secondary/supplementary records excluded) carrying a supplementary-
+alignment (`SA:Z`) tag, the primary and first supplementary segments are reconstructed from their
+CIGAR strings; same-contig, same-strand segment pairs define a candidate deletion junction (bp5 =
+last retained base upstream, bp3 = first retained base downstream). Reads supporting concordant
+breakpoints are grouped by greedy single-linkage clustering to the cluster seed (the first member,
+±25 bp), with cluster breakpoints taken as the per-coordinate mode and junction support (JR) as the
+number of *distinct* supporting reads. Only deletions the aligner represents as a supplementary/split
+alignment are visible, so the practical lower size limit is aligner-set (≈ hundreds of bp at 150 bp
+reads); the `HP_SV_MINSIZE` = 50 bp parameter is a lower guard, not the detection limit. *(ii)
+Read-depth corroboration:* per-base depth is computed in-process (`pysam` count_coverage) and a
+deletion must exhibit a coverage drop — median depth across the deleted span divided by median depth
+in the flanking 200 bp windows ≤ 0.9 (≥ 10% dosage loss). A deletion is reported as **PASS** only
+when a clustered junction (≥ 3 distinct split reads) and a coverage drop co-occur; junction-only
+events (e.g. sub-~10% heteroplasmy, where the depth dip is within noise) are retained but flagged
+rather than PASS. All genomic windows wrap modulo 16,569 bp, so breakpoints and flanks straddling
+the origin are computed correctly. The thresholds are configurable defaults intended for calibration
+against a heteroplasmy dilution series; the coverage-drop gate (not the size/support minima) sets the
+practical lower heteroplasmy limit.
+
+Heteroplasmy is quantified two complementary ways: a junction-fraction estimate
+AFJ = JR/(JR + SR), where the intact spanning-read count SR is a coverage proxy (local breakpoint
+depth − JR), and a coverage-ratio estimate AFC = 1 − (median depth inside / median depth in flanks).
+Because both derive from breakpoint depth they are not statistically independent; their absolute
+difference (AFDIFF) is therefore reported as a *consistency* QC flag (large values indicate
+amplification bias or duplication-as-deletion) rather than an orthogonal validation. False-positive
+control is layered: nuclear-mitochondrial (NUMT) paralog reads are suppressed upstream by competitive
+alignment against a NUMT reference during MitoHPC realignment (inherited from that step; the residual
+NUMT-driven false-call rate is not yet independently quantified within this module); the
+mapping-quality filter, minimum split-read support, minimum size, and the mandatory coverage-drop
+gate (which rejects chimeras and copy-number *gains* lacking a true dosage loss) add further
+specificity; and breakpoints falling in homopolymer runs, the control region (D-loop), known
+NUMT-like sites, the del4977 13 bp direct repeat, or within 20 bp of the artificial origin are
+explicitly flagged (the origin flag also blocks PASS, since deletion-versus-duplication is not
+disambiguated for origin-crossing events in this version). v1 calls deletions only: a tandem
+duplication yields a coverage *gain* and is correctly rejected, and true small origin-crossing
+deletions are not yet resolved.
+
+Output follows general SV/VCF best practice for interoperability and reproducibility: a
+spec-correct VCFv4.2 per sample with full provenance (tool and `pysam` versions, reference path,
+`##contig` with sequence MD5, the exact command line, and one header line per parameter), the sample
+as the genotype column, and rich annotation — breakpoint microhomology/direct-repeat length and
+sequence (HOMLEN/HOMSEQ, with IMPRECISE/CIPOS/CIEND), a homology class (DELCLASS), an evidence claim
+(SVCLAIM = junction and/or depth), recognition of the canonical MITOMAP common deletion (del4977;
+COMMON), affected mtDNA features (GENE/NGENE), HGVS notation, and FORMAT GT:DP:AD:AF:SR. A tidy long
+table accompanies each VCF. Across a cohort, calls are aggregated (`bcftools`) into a genotype matrix
+with per-site recurrence (NS), a sites-only union for downstream annotation (AnnotSV/VEP), and a
+self-contained, dependency-free interactive HTML report (circular and linear genome browsers with
+gene/OXPHOS-complex annotation, a per-position deletion-frequency track, and recurrence/summary
+views). The module adds a single dependency (`pysam`, a pinned manylinux wheel bundling htslib;
+containerized) and is purely additive and **default-off**: existing SNV, heteroplasmy, copy-number,
+and haplogroup deliverables are byte-for-byte unchanged.
+
+The implementation has been validated **in silico** as a proof-of-concept under idealized
+conditions: paired-end reads are generated from defined mixtures of wild-type and deletion-bearing
+circular genomes and aligned through the pipeline's own circular path, so the inside-vs-flank
+coverage ratio equals the spiked heteroplasmy by construction. A committed regression suite (20
+checks) confirms recovery of spiked deletions — including the common deletion at 30% and 5%
+heteroplasmy, multiple simultaneous deletions, near-homoplasmy (95%), a control-region deletion, and
+a low-coverage (40×) case — and the expected negatives: wild-type samples, tandem duplications
+(coverage gain), and origin-crossing artifacts all yield zero PASS calls, degenerate inputs fail
+cleanly without tracebacks, and every emitted VCF passes a `bcftools` specification gate. This
+establishes algorithmic correctness, not real-world performance; quantitative benchmarking on real
+data is the planned next step — a heteroplasmy × depth titration to establish sensitivity and limit
+of detection, an empirical per-genome false-positive rate (including NUMT-stress samples),
+breakpoint-accuracy statistics, at least one orthogonally confirmed positive control (e.g. a single
+large-scale deletion validated by long-range PCR/ddPCR/Southern blot), and a head-to-head
+concordance against an established mtDNA deletion caller (e.g. eKLIPse, MitoSAlt).
+
+> *Citations to add when this text is placed in a grant/manuscript:* common deletion (del4977) —
+> Schon et al., *Science* 1989; MITOMAP — Lott et al. 2013 / mitomap.org; rCRS (NC_012920.1) —
+> Andrews et al., *Nat Genet* 1999; split-read + read-depth SV precedent — DELLY (Rausch 2012),
+> LUMPY (Layer 2014), Manta (Chen 2016); mtDNA-specific deletion callers for the comparison —
+> eKLIPse (Goudenège 2019), MitoSAlt (Basu 2020). (Verify each before submission.)
+
+---
+
 ## 1. Intuition (the 30-second version)
 
 A mitochondrial **deletion** leaves two fingerprints in aligned short reads:
@@ -65,7 +177,8 @@ fi
 |---|---|
 | `$O.bam` — MitoHPC's circular-aware, subsampled, deduplicated chrM alignment (1..16569) | `$O.sv.vcf` — per-sample deletion calls (VCFv4.2, `SVTYPE=DEL`) |
 | `RefSeq/$HP_MT.fa` — reference (for the VCF REF base) | `$O.sv.tab` — flat table (same calls) |
-| `RefSeq/{HP,DLOOP}.bed.gz`, `RefSeq/NUMT.vcf.gz` — FP masks (flags only) | (cohort) `$ODIR/sv.concat.vcf`, `$ODIR/sv.tab` via `getSVSummary.sh` |
+| `RefSeq/{HP,DLOOP}.bed.gz`, `RefSeq/NUMT.vcf.gz` — FP masks (flags only) | (cohort, via `getSVSummary.sh`) `$ODIR/{sv.tab, sv.merged.vcf.gz,` |
+| `RefSeq/genes.bed.gz` — mtDNA features for `GENE`/`NGENE` annotation | `sv.sites.vcf.gz, sv.report.html}` |
 
 With `HP_SV` empty the block is skipped and **no existing deliverable changes** (verified by the
 diff in `CLAUDE.md` §0 / the additive wiring). `getSummary.sh` is never edited; cohort SV
@@ -385,7 +498,7 @@ DEL/DUP disambiguation, optional eKLIPse/long-read engines) is in `SV_CALLING.md
 export HP_SV=callsv          # (optionally override HP_SV_* thresholds)
 ```
 then run normally (`run.sh > run.all.sh; bash run.all.sh`). Produces `$O.sv.vcf`/`$O.sv.tab` per
-sample and `$ODIR/{sv.tab, sv.merged.vcf.gz, sv.sites.vcf.gz}` for the cohort.
+sample and `$ODIR/{sv.tab, sv.merged.vcf.gz, sv.sites.vcf.gz, sv.report.html}` for the cohort.
 
 **Standalone** on any chrM BAM (needs `python3` with `pysam`):
 ```bash
@@ -405,6 +518,17 @@ SV caller no longer shells out to them.
 
 ## Changelog
 
+- **v1.4 (reviewer/grant abstract + provenance):** added §0, a two-level "Methods abstract"
+  (Level 1 intuitive + Level 2 grant-ready preliminary-data text) written to be lifted into a
+  manuscript/grant, with honest scope and validation framing (in-silico proof-of-concept + an
+  explicit real-data validation plan; heteroplasmy estimates described as *complementary* — they
+  share the breakpoint depth signal — not "independent"; the aligner-bounded effective size floor
+  surfaced; deletions-only scope stated up front). Verified the whole doc against the code via an
+  adversarial multi-agent pass and fixed stale references (no `sv.concat.vcf` is produced; §2 and
+  §12 now list the real cohort outputs incl. `sv.report.html`). **Provenance fix:** the VCF
+  `##callsv_param_*` header now names the real env var (`HP_SV_MINDP`, was the literal-uppercased
+  `MINDEPTH`); `callsv.py` only — algorithm, thresholds, and the rest of the schema unchanged;
+  committed `example/` regenerated; tests remain 20/20. Default-off behavior unchanged.
 - **v1.3 (interactive cohort report):** `scripts/svReport.py` builds a self-contained, offline
   interactive `sv.report.html` (circular mtDNA + linear genome browser, gene/OXPHOS-complex
   annotation, per-position deletion-frequency map, VAF-coloured calls, live filtering, summary

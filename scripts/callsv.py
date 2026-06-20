@@ -422,8 +422,12 @@ def write_vcf(args, records, seq):
     out.write("##contig=<ID=%s,length=%d,md5=%s>\n" % (args.chrom, args.mtlen, fasta_md5(seq)))
     out.write("##sample=%s\n" % args.sample)
     out.write('##callsv_command="%s"\n' % " ".join(sys.argv))
+    # name each provenance line by its real HP_SV_* env var (the argparse key 'mindepth' is exposed
+    # as HP_SV_MINDP in init.sh/callSV.sh, so don't emit the literal-uppercased 'MINDEPTH')
+    param_env = {"minmapq": "MINMAPQ", "minjr": "MINJR", "minsize": "MINSIZE", "maxsize": "MAXSIZE",
+                 "pad": "PAD", "drop": "DROP", "flank": "FLANK", "mindepth": "MINDP"}
     for k in ("minmapq", "minjr", "minsize", "maxsize", "pad", "drop", "flank", "mindepth"):
-        out.write("##callsv_param_HP_SV_%s=%s\n" % (k.upper(), getattr(args, k)))
+        out.write("##callsv_param_HP_SV_%s=%s\n" % (param_env[k], getattr(args, k)))
     with open(args.header) as h:                  # static ##ALT/##FILTER/##INFO/##FORMAT
         for line in h:
             line = line.rstrip("\n")

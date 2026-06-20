@@ -1,5 +1,5 @@
 ##fileformat=VCFv4.2
-##fileDate=20260619
+##fileDate=20260620
 ##source=MitoHPC_callsv (example output)
 ##reference=file://./RefSeq/chrM.fa
 ##contig=<ID=chrM,length=16569,md5=c68f52674c9fb33aef52dcf399755519>
@@ -12,7 +12,7 @@
 ##callsv_param_HP_SV_PAD=25
 ##callsv_param_HP_SV_DROP=0.9
 ##callsv_param_HP_SV_FLANK=200
-##callsv_param_HP_SV_MINDEPTH=0
+##callsv_param_HP_SV_MINDP=0
 ##ALT=<ID=DEL,Description="Deletion">
 ##FILTER=<ID=PASS,Description="Split-read junction corroborated by a coverage drop">
 ##FILTER=<ID=lowJR,Description="Fewer than HP_SV_MINJR junction-supporting reads">
