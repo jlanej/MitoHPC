@@ -334,6 +334,20 @@ rise ~10–16% and the PASS limit of detection improves from ~8% to ~7% (del4977
 `HP_SV_MINCLIP=0` to disable. These harvested reads are clipped at the boundary, so they are still
 correctly *excluded* from `SR`, keeping `AFJ = JR/(JR+SR)` consistent.
 
+> **Why harvesting makes the caller robust to the *aligner settings*.** Whether a junction read's
+> short arm becomes an `SA` tag or a bare soft-clip is governed by the aligner — for `bwa mem`, the
+> supplementary-alignment score threshold `-T` (default **30** → the shorter arm needs ~30 bp) and the
+> clipping penalty `-L`. Production MitoHPC uses `bwa mem -Y` with both at default (`filter.sh`); the
+> mocks use `minimap2 -ax sr`. A dedicated harness (`test/sv/aligntest.py`, committed result
+> `test/sv/real/aligntest.tsv`) aligns a simulated del4977 under `bwa` (default, `-T20`, `-T15`,
+> `-L2`) and `minimap2 -ax sr` and runs the caller. Result: **with harvesting on, every configuration
+> recovers the *identical* `JR`/`AFJ`, PASS outcome, and breakpoint** (e.g. @10% het all give
+> `JR=473`, PASS). With harvesting *off*, the aligner choice matters by ~5% (`bwa` default 416 vs
+> `bwa -T15` 435 vs `minimap2` 414 junction reads) — exactly the short-arm reads `-T 30` leaves as
+> soft-clips. **So the production `bwa` defaults are not limiting deletion detection**, and lowering
+> `-T` is unnecessary; harvesting closes the gap. Re-run the harness if your read length or aligner
+> differs.
+
 ### 4.5 Split-read evidence lens (`JSUP` / `SRCONS` / `SRSB`)
 Split reads are **positional** evidence — they pin a breakpoint to a single base — so a handful of
 reads all clipping at the *same* base is strong evidence of a real junction even when read depth shows
@@ -730,6 +744,15 @@ SV caller no longer shells out to them.
 
 ## Changelog
 
+- **v2.6 (alignment-settings robustness test):** addressed the question "are MitoHPC's `bwa mem`
+  settings stopping us from *seeing* deletions via split reads?" with a dedicated harness
+  (`test/sv/aligntest.py`, committed `test/sv/real/aligntest.tsv`) that aligns a simulated del4977
+  under `bwa mem` (production default `-T30/-L5`, plus `-T20`/`-T15`/`-L2`) and `minimap2 -ax sr`,
+  then calls. Result: **with soft-clip harvesting on, every configuration recovers the identical
+  `JR`/`AFJ`, PASS, and breakpoint** (@10% all give `JR=473`, PASS); the aligner's `-T` threshold only
+  matters with harvesting *off* (~5%: `bwa` default 416 vs `bwa -T15` 435 vs `minimap2` 414). So the
+  production `bwa` defaults are **not** limiting detection and `-T` needs no change — §4.4 documents
+  this. Docs/test only; no caller change.
 - **v2.5 (doc sync + framing against established callers):** added **§0.5 "Relationship to established
   methods"** — a comparison table positioning the caller against the mtDNA-specific tools (eKLIPse,
   MitoSAlt, Damas/MitoBreak) and general SV callers (DELLY, LUMPY, Manta, GRIDSS), mapping each design
