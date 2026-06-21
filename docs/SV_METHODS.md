@@ -301,9 +301,12 @@ AFDIFF = |AFJ − AFC|                                                    # junc
 > deletions (e.g. del4977 @30%: AFC 0.27 / AFJ 0.25) and diverge for artifacts (AFJ ≈ 0 vs AFC > 0).
 > See the [Changelog](#changelog).
 
-### 5.3 PASS / FILTER logic
-A call is **PASS** only if **none** of these fire. The consistency gates act on the corrected `AFJ`,
-so they are **depth-invariant** (impossible while v1's `AFJ` was collapsed to ~0):
+### 5.3 PASS / FILTER logic — two evidence paths
+A call is **PASS** if **either** evidence path is satisfied (`SVCLAIM` records which). Both gate on
+the **corrected** `AFJ`, so neither re-admits the depth-noise artifacts (whose `AFJ ≈ 0`).
+
+**(DJ) depth + junction** — a coverage drop corroborated by a proportional junction. PASS when
+**none** of these fire:
 
 | FILTER reason | Condition |
 |---|---|
@@ -317,11 +320,28 @@ so they are **depth-invariant** (impossible while v1's `AFJ` was collapsed to ~0
 | `fragile_weakJ` | breakpoint in D-loop/NUMT/origin **and** (`AFJ < HP_SV_STRONGAFJ`[0.05] or `JR < HP_SV_STRONGJR`[10]) |
 | `bigdel_weakJ` | `SVLEN ≥ HP_SV_BIGDEL` (8000) **and** (`JR < HP_SV_BIGMINJR`[8] or `AFJ < HP_SV_BIGMINAFJ`[0.02]) |
 
-`unexplained_drop` + `lowAFJ` are the load-bearing artifact filters: a coverage dip with no
-proportional junction (a NUMT / mappability / control-region bowl) is rejected at any depth.
-`fragile_weakJ` lets a *genuine* D-loop deletion with strong junction support PASS while rejecting a
-weak one. Genuine **low-heteroplasmy** deletions (below ~10%) still land in the `no_cvg_drop` tier
-with full evidence, just not PASS.
+**(J) junction-strong** — clean, well-supported split reads PASS **without** a coverage drop, because
+mtDNA read depth is finicky and a high-confidence junction is the highest-quality signal. PASS when
+`JR ≥ HP_SV_JMINJR` (8) **and** `AFJ ≥ HP_SV_JMINAFJ` (0.05) **and** `SVLEN < HP_SV_BIGDEL` **and**
+not at the origin **and** not a coverage *gain* (`CVGR ≤ 1 + HP_SV_GAINPAD` ⇒ excludes duplications)
+**and** (if in a fragile D-loop/NUMT region) the junction is strong (`AFJ ≥ STRONGAFJ`, `JR ≥ STRONGJR`).
+A J-path PASS carries `SVCLAIM=J`; a DJ PASS carries `SVCLAIM=DJ`. Filter to `SVCLAIM=DJ` for
+depth-corroborated calls only, or keep `J` to surface clean junctions where depth is unreliable.
+
+`unexplained_drop` + `lowAFJ` (DJ) and the `AFJ`/`JR` floors (J) are the load-bearing, depth-invariant
+artifact filters: a coverage dip with no proportional junction (a NUMT / mappability / control-region
+bowl, `AFJ ≈ 0`) is rejected on **both** paths. Genuine very-low-heteroplasmy deletions (where neither
+a clean dosage drop nor a strong junction is present) still land in a non-PASS tier with full evidence.
+
+**Sensitivity (titration).** A heteroplasmy × depth titration of del4977
+(`test/sv/titration.py`; committed result `test/sv/real/titration_del4977.tsv`) shows the deletion is
+**detected at 100% down to 2%** heteroplasmy (real variants are never lost — below the PASS threshold
+they are surfaced as non-PASS records with full evidence) and reaches **PASS at ≥8%** at 1,000–4,000×:
+the **junction-strong (J) path delivers the 8% tier** (clean reads, no clean dosage drop yet) and the
+DJ path takes over at ≥10%. `AFC` tracks the spiked heteroplasmy (0.09 @8%, 0.12 @10%, 0.18 @20%,
+0.50 @50%). To push the PASS LoD toward ~5%, lower `HP_SV_JMINAFJ` to ~0.035 (at 5% the corrected
+`AFJ` is ~0.036–0.040) — safe vs. the real-data artifacts, which sit at `AFJ ≈ 0`, far below — at some
+cost to specificity; calibrate per cohort.
 
 ### 5.4 False-positive / annotation flags (`INFO`)
 | Flag | Meaning (fires if either breakpoint matches) |
@@ -427,6 +447,9 @@ a cohort; positional/fuzzy merging is a future refinement.)
 | `HP_SV_BIGDEL` | 8000 | "very large" deletion threshold (bp) |
 | `HP_SV_BIGMINJR` | 8 | min `JR` for a very large deletion |
 | `HP_SV_BIGMINAFJ` | 0.02 | min corrected `AFJ` for a very large deletion |
+| `HP_SV_JMINJR` | 8 | min `JR` for a **junction-strong** (depth-independent) PASS |
+| `HP_SV_JMINAFJ` | 0.05 | min corrected `AFJ` for a junction-strong PASS (lower ⇒ more sensitive, less specific) |
+| `HP_SV_GAINPAD` | 0.10 | coverage-gain tolerance; `CVGR > 1+GAINPAD` ⇒ duplication, blocks the junction-strong path |
 
 > **v2 calibration caveat.** The dosage/consistency thresholds above are defaults validated on the
 > simulated mocks plus real 1000G high-coverage chrM (healthy → 0 PASS); they are **not** yet locked
@@ -561,6 +584,16 @@ SV caller no longer shells out to them.
 
 ## Changelog
 
+- **v2.1 (junction-strong PASS path + sensitivity titration):** adds a second, depth-independent
+  PASS path so clean, well-supported split reads PASS **without** a coverage drop (`SVCLAIM=J`) —
+  mtDNA read depth is finicky, and a high-confidence junction is the highest-quality signal. Gated on
+  the corrected `AFJ` (`HP_SV_JMINJR`[8] / `HP_SV_JMINAFJ`[0.05]), excludes origin-crossing arcs
+  (`SVLEN<HP_SV_BIGDEL`), coverage *gains* (`HP_SV_GAINPAD` ⇒ duplications), and fragile-region-weak
+  calls, so it does **not** re-admit the real artifacts (`AFJ ≈ 0`) — verified: mock negatives and
+  real healthy samples stay 0 PASS. Detection is unchanged (`extract_junctions` untouched); the J
+  path only *adds* sensitivity for real deletions whose dosage drop is lost in depth noise. New
+  `test/sv/titration.py` (heteroplasmy × depth) measures the PASS LoD (~5–10% at 1–4k×) and confirms
+  `AFC` tracks the spiked fraction (≈0.11/0.20/0.51 @10/20/50%). Suite unchanged at 22 checks.
 - **v2.0 (heteroplasmy + specificity overhaul — real-data driven):** fixes two defects exposed on a
   real 1384-sample cohort and reproduced on 1000G high-coverage chrM. (1) **Junction VAF was
   structurally wrong:** `SR = total_pileup_depth − JR` put the whole pileup (thousands ×) in the

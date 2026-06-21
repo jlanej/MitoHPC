@@ -28,11 +28,15 @@ DEPTH=${1:-2000}
 ref=$RDIR/chrM.fa; mtc=$RDIR/chrMC.fa; fai=$RDIR/chrM.fa.fai
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
-# sample -> 1000G high-cov CRAM (https). Add rows to widen the panel.
+# sample -> 1000G high-cov CRAM (https). Add rows to widen the panel (more candidates commented).
 SAMPLES="
 NA12718	https://ftp.sra.ebi.ac.uk/vol1/run/ERR323/ERR3239480/NA12718.final.cram
 NA12748	https://ftp.sra.ebi.ac.uk/vol1/run/ERR323/ERR3239481/NA12748.final.cram
+NA12775	https://ftp.sra.ebi.ac.uk/vol1/run/ERR323/ERR3239482/NA12775.final.cram
 "
+# more candidates (uncomment / add to widen): from the high-cov sequence.index, col1=CRAM url, col10=sample
+#   NA12777  .../ERR3239483/NA12777.final.cram      NA12778  .../ERR3239484/NA12778.final.cram
+#   NA12827  .../ERR3239485/NA12827.final.cram      NA18488  .../ERR3239491/NA18488.final.cram
 
 printf '%s\n' "$SAMPLES" | while IFS=$'\t' read -r s url; do
   [ -n "${s:-}" ] || continue

@@ -53,6 +53,11 @@ STRONGJR=${HP_SV_STRONGJR:-10}      # junction-read count to PASS in a fragile r
 BIGDEL=${HP_SV_BIGDEL:-8000}    # "very large" deletion threshold (bp)
 BIGMINJR=${HP_SV_BIGMINJR:-8}   # min JR for a very large deletion
 BIGMINAFJ=${HP_SV_BIGMINAFJ:-0.02}  # min corrected AFJ for a very large deletion
+# junction-strong PASS path: clean, well-supported split reads PASS WITHOUT a coverage drop
+# (mtDNA read depth is finicky). Tighten JMINJR/JMINAFJ to be stricter about junction-only calls.
+JMINJR=${HP_SV_JMINJR:-8}       # min JR for a junction-only (depth-independent) PASS
+JMINAFJ=${HP_SV_JMINAFJ:-0.05}  # min corrected AFJ for a junction-only PASS
+GAINPAD=${HP_SV_GAINPAD:-0.10}  # coverage-gain tolerance; ratio>1+GAINPAD => DUP (blocks junction-only PASS)
 
 test -s "$BAM"
 test -s "$RDIR/$MT.fa"
@@ -80,6 +85,7 @@ fi
   --flank "$FLANK" --mindepth "$MINDP" \
   --trans "$TRANS" --minaf "$MINAF" --minafj "$MINAFJ" --affrac "$AFFRAC" \
   --strongafj "$STRONGAFJ" --strongjr "$STRONGJR" --bigdel "$BIGDEL" \
-  --bigminjr "$BIGMINJR" --bigminafj "$BIGMINAFJ" $maskopt
+  --bigminjr "$BIGMINJR" --bigminafj "$BIGMINAFJ" \
+  --jminjr "$JMINJR" --jminafj "$JMINAFJ" --gainpad "$GAINPAD" $maskopt
 
 echo "[callSV] $S -> $O.sv.vcf ($(grep -vc '^#' "$O.sv.vcf") records)" >&2

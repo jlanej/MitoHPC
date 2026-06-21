@@ -306,36 +306,42 @@ def masked_depths(dep, a, b, m, masked):
     return out
 
 
-def count_spanning(bam, chrom, bp5, bp3, m, minmapq):
-    """Distinct read templates aligned reference-CONTIGUOUSLY across a breakpoint boundary — i.e.
-    wild-type molecules that do NOT carry the deletion. This is the correct denominator for the
-    junction VAF, replacing the old `SR = total_pileup_depth - JR` (which collapsed AFJ to ~0 at
-    mitochondrial depth: at 16000x, JR/(depth) ~ 0 even for a real 30% deletion).
+def count_spanning_boundaries(bam, chrom, boundaries, minmapq):
+    """For every breakpoint boundary B (1-based) in `boundaries`, count distinct read TEMPLATES
+    aligned reference-CONTIGUOUSLY across B/(B+1) — wild-type molecules that do NOT carry a deletion
+    there. This is the correct denominator for the junction VAF, replacing the old
+    `SR = total_pileup_depth - JR` (which collapsed AFJ to ~0 at mtDNA depth: JR/depth ~ 0 even for a
+    real 30% deletion). Returns {B: count}.
 
-    A template spans the bp5 boundary if some aligned block covers both bp5 and bp5+1 (so the read
-    is continuously matched across the start of the deleted span); the bp3 boundary uses bp3-1/bp3.
-    Reads soft-clipped or SA-split AT the boundary (i.e. carrying this deletion) have a block that
-    ENDS at the boundary and are correctly excluded. Primary + supplementary blocks of the same
-    template are unioned (by query_name) so an origin-crossing wild-type read, which circSam.pl
-    splits into two arcs, still contributes. SR = min over the two breakpoints (conservative)."""
-    foot = {}
+    A template spans B if some aligned block covers both B and B+1 (continuously matched across the
+    boundary). Reads soft-clipped or SA-split AT B (carrying the deletion) have a block that ENDS at
+    B and are correctly excluded. Primary + supplementary blocks of the same template both count, so
+    an origin-crossing wild-type read (which circSam.pl splits into two arcs) still contributes.
+
+    ONE BAM pass for ALL boundaries (mtDNA has few junctions, so |boundaries| is tiny); per read we
+    test only the boundaries its blocks could cover. Dedupe templates per boundary via a set."""
+    bset = sorted(set(boundaries))
+    if not bset:
+        return {}
+    seen = {b: set() for b in bset}
     with pysam.AlignmentFile(bam, "rb") as af:
         for r in af.fetch(chrom):
             if r.is_unmapped or r.is_secondary:        # keep supplementary (origin-crossing arcs)
                 continue
             if r.mapping_quality < minmapq:
                 continue
-            foot.setdefault(r.query_name, []).extend(r.get_blocks())   # 0-based [s,e) ref blocks
+            tid = r.query_name                          # dedupe across read1/read2 and both arcs
+            for (s, e) in r.get_blocks():               # 0-based [s,e) => covers 1-based [s+1 .. e]
+                lo, hi = s + 1, e
+                for b in bset:
+                    if lo <= b and b + 1 <= hi:
+                        seen[b].add(tid)
+    return {b: len(seen[b]) for b in bset}
 
-    def spans(boundary):    # templates contiguously aligned across boundary/(boundary+1) (1-based)
-        n = 0
-        for blocks in foot.values():
-            for (s, e) in blocks:        # 0-based half-open => covers 1-based [s+1 .. e]
-                if s + 1 <= boundary and boundary + 1 <= e:
-                    n += 1
-                    break
-        return n
-    return min(spans(bp5), spans(bp3 - 1))
+
+def spanning_count(span_by_b, bp5, bp3):
+    """SR for one junction = min spanning over its two boundaries (conservative)."""
+    return min(span_by_b.get(bp5, 0), span_by_b.get(bp3 - 1, 0))
 
 
 # --------------------------------------------------------------------------- #
@@ -358,6 +364,10 @@ def call(args):
     junctions = extract_junctions(args.bam, args.chrom, args.minmapq,
                                   args.minsize, maxsize, args.pad, args.minsupport, m)
     dep = per_base_depth(args.bam, args.chrom, m)
+    # wild-type spanning reads for every junction boundary, in ONE BAM pass (not per junction)
+    boundaries = [bp5 for (bp5, _b3, _s, _j, _st) in junctions]
+    boundaries += [bp3 - 1 for (_b5, bp3, _s, _j, _st) in junctions]
+    span_by_b = count_spanning_boundaries(args.bam, args.chrom, boundaries, args.minmapq)
 
     hp = load_bed_gz(args.hp)
     dloop = load_bed_gz(args.dloop)
@@ -379,7 +389,7 @@ def call(args):
 
         # --- (1) junction VAF with the CORRECTED denominator: true wild-type spanning reads,
         #         not the whole pileup. AFJ now tracks heteroplasmy at any depth. ---------------
-        sr = count_spanning(args.bam, args.chrom, bp5, bp3, m, args.minmapq)
+        sr = spanning_count(span_by_b, bp5, bp3)
         afj = jr / (jr + sr) if (jr + sr) > 0 else 0.0
 
         # --- (2) coverage-dosage VAF = PRIMARY heteroplasmy: 1 - trimmed_median(inside)/flank
@@ -425,29 +435,51 @@ def call(args):
         if in_numt:
             flags.append("NUMT")
 
-        # --- (3) PASS / FILTER: a dosage drop, corroborated by a PROPORTIONAL junction, in a
-        #     non-fragile context. The consistency gates act on the corrected AFJ, so they are
-        #     depth-invariant (impossible while AFJ was collapsed to ~0). --------------------- #
-        fil = []
+        # --- (3) PASS / FILTER: TWO independent evidence paths; PASS if EITHER is satisfied. ---
+        #   DJ path: a dosage drop corroborated by a PROPORTIONAL junction, non-fragile.
+        #   J  path: strong, clean split-read evidence ALONE — no coverage drop required (mtDNA
+        #            read depth is finicky, so a high-confidence junction is the highest signal).
+        # Both gate on the CORRECTED AFJ, so neither re-admits the depth-noise artifacts (AFJ~0).
+        in_fragile = in_dloop or in_numt or wrapf
+        weak_in_fragile = in_fragile and (afj < args.strongafj or jr < args.strongjr)
+        bigdel_weak = svlen >= args.bigdel and (jr < args.bigminjr or afj < args.bigminafj)
+        cvg_gain = ratio > 1.0 + args.gainpad          # coverage GAIN => duplication, not a deletion
+
+        fil = []                                              # DJ-path failures (reported on FILTER)
         if jr < args.minjr:
-            fil.append("lowJR")                                    # too few junction reads
+            fil.append("lowJR")                               # too few junction reads
         if ratio > args.drop:
-            fil.append("no_cvg_drop")                              # < ~10% dosage loss
+            fil.append("no_cvg_drop")                         # < ~10% dosage loss
         if wrapf:
-            fil.append("WRAP")                                     # origin: DEL vs DUP unresolved
+            fil.append("WRAP")                                # origin: DEL vs DUP unresolved
         if args.mindepth and d_fl < args.mindepth:
-            fil.append("lowDP")                                    # flank depth too low to trust
+            fil.append("lowDP")                               # flank depth too low to trust
         if afc < args.minaf:
-            fil.append("low_dosage")                               # dosage drop below MINAF
+            fil.append("low_dosage")                          # dosage drop below MINAF
         if afj < args.minafj:
-            fil.append("lowAFJ")                                   # junction fraction floor
+            fil.append("lowAFJ")                              # junction fraction floor
         if afj < args.affrac * afc:
-            fil.append("unexplained_drop")                         # drop not junction-corroborated
-        if (in_dloop or in_numt or wrapf) and (afj < args.strongafj or jr < args.strongjr):
-            fil.append("fragile_weakJ")                            # fragile region needs strong junction
-        if svlen >= args.bigdel and (jr < args.bigminjr or afj < args.bigminafj):
-            fil.append("bigdel_weakJ")                             # huge deletion needs strong junction
-        flt = ";".join(fil) if fil else "PASS"
+            fil.append("unexplained_drop")                    # drop not junction-corroborated
+        if weak_in_fragile:
+            fil.append("fragile_weakJ")                       # fragile region needs strong junction
+        if bigdel_weak:
+            fil.append("bigdel_weakJ")                        # huge deletion needs strong junction
+        dj_pass = not fil
+
+        # junction-strong path: depth-independent. High corrected AFJ + many junction reads, not at
+        # the origin, not a coverage GAIN (that is a duplication), not fragile-weak, and NOT a very
+        # large deletion (svlen < BIGDEL): huge "deletions" are dominated by the origin-crossing
+        # complementary-arc artifact and MUST be dosage-corroborated, so junction-only is not enough.
+        # Lets a real small/moderate deletion with clean reads but a noisy/absent dosage drop PASS.
+        j_pass = (jr >= args.jminjr and afj >= args.jminafj and svlen < args.bigdel
+                  and not wrapf and not cvg_gain and not weak_in_fragile)
+
+        if dj_pass:
+            flt = "PASS"                                      # depth + junction corroborate (SVCLAIM may be DJ)
+        elif j_pass:
+            flt, svclaim = "PASS", "J"                        # junction-only high-confidence PASS
+        else:
+            flt = ";".join(fil)
 
         refbase = seq[bp5 - 1].upper() if 1 <= bp5 <= len(seq) else "N"
         hgvs = "NC_012920.1:m.%d_%ddel" % (bp5 + 1, end)
@@ -510,10 +542,11 @@ def write_vcf(args, records, seq):
                  "pad": "PAD", "drop": "DROP", "flank": "FLANK", "mindepth": "MINDP",
                  "trans": "TRANS", "minaf": "MINAF", "minafj": "MINAFJ", "affrac": "AFFRAC",
                  "strongafj": "STRONGAFJ", "strongjr": "STRONGJR", "bigdel": "BIGDEL",
-                 "bigminjr": "BIGMINJR", "bigminafj": "BIGMINAFJ"}
+                 "bigminjr": "BIGMINJR", "bigminafj": "BIGMINAFJ",
+                 "jminjr": "JMINJR", "jminafj": "JMINAFJ", "gainpad": "GAINPAD"}
     for k in ("minmapq", "minjr", "minsize", "maxsize", "pad", "drop", "flank", "mindepth",
               "trans", "minaf", "minafj", "affrac", "strongafj", "strongjr", "bigdel",
-              "bigminjr", "bigminafj"):
+              "bigminjr", "bigminafj", "jminjr", "jminafj", "gainpad"):
         out.write("##callsv_param_HP_SV_%s=%s\n" % (param_env[k], getattr(args, k)))
     with open(args.header) as h:                  # static ##ALT/##FILTER/##INFO/##FORMAT
         for line in h:
@@ -556,6 +589,10 @@ def main():
     p.add_argument("--bigdel", type=int, default=8000, help="'very large' deletion threshold (bp)")
     p.add_argument("--bigminjr", type=int, default=8, help="min JR for a very large deletion")
     p.add_argument("--bigminafj", type=float, default=0.02, help="min corrected AFJ for a very large deletion")
+    # junction-strong PASS path: high-confidence split reads can PASS without a coverage drop
+    p.add_argument("--jminjr", type=int, default=8, help="min JR for a junction-only (depth-independent) PASS")
+    p.add_argument("--jminafj", type=float, default=0.05, help="min corrected AFJ for a junction-only PASS")
+    p.add_argument("--gainpad", type=float, default=0.10, help="coverage-gain tolerance; ratio>1+gainpad => DUP, blocks junction-only PASS")
     p.add_argument("--hp")
     p.add_argument("--numt")
     p.add_argument("--dloop")

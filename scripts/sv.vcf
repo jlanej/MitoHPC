@@ -12,7 +12,7 @@
 ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">
 ##INFO=<ID=END,Number=1,Type=Integer,Description="End position: last deleted base (= POS + |SVLEN|)">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Difference in length between REF and ALT alleles (negative for DEL; VCFv4.2 convention)">
-##INFO=<ID=SVCLAIM,Number=A,Type=String,Description="Evidence claim: J=junction/adjacency, D=read-depth/abundance, DJ=both">
+##INFO=<ID=SVCLAIM,Number=A,Type=String,Description="Evidence claim: J=junction/adjacency only, D=read-depth/abundance, DJ=both. A PASS with SVCLAIM=J was confirmed by high-confidence split reads alone (no required coverage drop); DJ was confirmed by depth+junction together">
 ##INFO=<ID=IMPRECISE,Number=0,Type=Flag,Description="Imprecise breakpoint (ambiguous within a direct repeat / microhomology)">
 ##INFO=<ID=CIPOS,Number=.,Type=Integer,Description="Confidence interval around POS for imprecise variants (offset pairs, each spanning 0)">
 ##INFO=<ID=CIEND,Number=.,Type=Integer,Description="Confidence interval around END for imprecise variants (offset pairs, each spanning 0)">
