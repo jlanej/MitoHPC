@@ -90,6 +90,10 @@ def load_calls(path):
                 "len": int(r.get("svlen", 0)),
                 "vaf": float(r.get("af_coverage", 0) or 0),   # PRIMARY heteroplasmy = coverage-dosage AFC
                 "afj": float(r.get("af_junction", 0) or 0),   # junction-fraction evidence
+                "jr": int(r.get("jr", 0) or 0),               # split (junction) read count
+                "jsup": r.get("jsup", ""),                    # split-read evidence tier HIGH/MOD/LOW
+                "srsb": float(r.get("srsb", 0) or 0),         # strand balance
+                "claim": r.get("svclaim", ""),                # DJ (depth+junction) vs J (junction-only)
                 "pass": r.get("filter", "") == "PASS",
                 "filter": r.get("filter", ""),
                 "cls": r.get("delclass", ""),
@@ -194,9 +198,14 @@ details{margin:8px 0}summary{cursor:pointer;color:var(--accent);font-size:14px}
     <div class="ctl"><div class="row"><span>min heteroplasmy (VAF)</span></div>
       <div class="row"><input type="range" id="fvaf" min="0" max="1" step="0.01" value="0"><span class="mono" id="fvafv" style="min-width:34px">0%</span></div></div>
     <div class="ctl"><span>class</span><div class="row" id="fcls"></div></div>
+    <div class="ctl"><span title="Split-read evidence — independent of read depth. Filter low-level events by junction support tier (JSUP) and read count.">split-read evidence (JSUP)</span>
+      <div class="row" id="fjsup"></div></div>
+    <div class="ctl"><div class="row"><span>min split reads (JR)</span></div>
+      <div class="row"><input type="range" id="fjr" min="0" max="50" step="1" value="0"><span class="mono" id="fjrv" style="min-width:34px">0</span></div></div>
     <div class="ctl"><label for="fsmp">sample contains</label><input type="text" id="fsmp" placeholder="all samples" size="14"></div>
     <div class="ctl"><span>&nbsp;</span><button id="reset" style="height:32px;padding:0 12px;border:1px solid var(--line);border-radius:8px;background:var(--surf);color:var(--ink);cursor:pointer">reset</button></div>
   </div>
+  <p class="sub" style="margin:8px 0 0">Tip: uncheck <b>PASS calls only</b> and set <b>split-read evidence</b> to <span class="mono">HIGH/MOD</span> to curate credible <i>low-level</i> junctions (clean split reads, no depth signal) apart from depth-supported calls.</p>
 </div>
 
 <h2>cohort overview — circular mtDNA</h2>
@@ -227,7 +236,8 @@ details{margin:8px 0}summary{cursor:pointer;color:var(--accent);font-size:14px}
   <dt><span class="mono">AFC</span> &mdash; coverage VAF <span class="muted">(primary)</span></dt><dd>Heteroplasmy from the dosage loss: <span class="mono">AFC = 1 &minus; trimmed-median(depth inside) / trimmed-median(depth in flanks)</span>, computed over D-loop/origin/homopolymer/NUMT-masked, transition-excluded windows. This is the reported VAF.</dd>
   <dt><span class="mono">AFJ</span> &mdash; junction VAF <span class="muted">(evidence)</span></dt><dd><span class="mono">AFJ = JR / (JR + SR)</span>, where SR counts wild-type reads aligned contiguously across the breakpoint. Used to confirm the deletion and gate calls (the coverage drop must be backed by a proportional junction), not as the primary load.</dd>
   <dt><span class="mono">AFDIFF</span></dt><dd>|AFJ &minus; AFC| &mdash; how far the two estimates disagree. Large values flag amplification bias or a duplication/artifact masquerading as a deletion (a QC signal).</dd>
-  <dt><span class="mono">JR</span> / <span class="mono">SR</span></dt><dd><b>JR</b> = number of distinct <b>split (junction) reads</b> spanning the deletion breakpoint; <b>SR</b> = <b>wild-type spanning reads</b> (a coverage proxy at the breakpoints).</dd>
+  <dt><span class="mono">JR</span> / <span class="mono">SR</span></dt><dd><b>JR</b> = number of distinct <b>split (junction) reads</b> spanning the deletion breakpoint; <b>SR</b> = <b>wild-type spanning reads</b> (the AFJ denominator at the breakpoints).</dd>
+  <dt><span class="mono">JSUP</span> &mdash; split-read evidence tier</dt><dd>A depth-independent curation lens for the junction itself: <b>HIGH</b> = consistent breakpoint, &ge; the read threshold, two-strand support; <b>MOD</b> = a clean, consistent junction but low read count or one-strand (a <i>credible low-level event</i> &mdash; a handful of reads all clipping at the same base); <b>LOW</b> = scattered breakpoint sizes (likely a mapping/NUMT artifact). Filter to <span class="mono">HIGH</span>/<span class="mono">MOD</span> (with <b>PASS only</b> off) to review low-heteroplasmy junctions that have strong split-read evidence but no read-depth signal. Backed by <span class="mono">SRCONS</span> (size consistency, microhomology-invariant) and <span class="mono">SRSB</span> (strand balance).</dd>
   <dt><span class="mono">CVGR</span></dt><dd>Coverage ratio = median depth inside the deletion / median depth in the flanks. <span class="mono">&le;0.9</span> means a &ge;10% coverage drop (the corroboration gate).</dd>
   <dt><span class="mono">SVCLAIM</span></dt><dd>Which evidence supports the call: <b>DJ</b> = the split-read junction <i>and</i> the coverage drop agree; <b>J</b> = split-read junction only (no confirming coverage drop).</dd>
   <dt><b>PASS</b> &amp; filters</dt><dd><b>PASS</b> via either the <b>DJ</b> path (coverage drop corroborated by a proportional junction) or the <b>J</b> path (junction-strong: clean, well-supported split reads, no coverage drop required). Non-PASS reasons: <span class="mono">lowJR</span> (too few junction reads), <span class="mono">no_cvg_drop</span> (no &ge;10% coverage drop), <span class="mono">low_dosage</span> (coverage-dosage AF below threshold), <span class="mono">lowAFJ</span> (corrected junction VAF below the floor), <span class="mono">unexplained_drop</span> (coverage drop not backed by a proportional junction &mdash; a likely artifact), <span class="mono">fragile_weakJ</span> (D-loop/NUMT/origin breakpoint without strong junction support), <span class="mono">bigdel_weakJ</span> (very large deletion with weak junction support), <span class="mono">WRAP</span> (breakpoint at the artificial origin / origin-crossing; deletion-vs-duplication unresolved), <span class="mono">lowDP</span> (flanking depth below threshold).</dd>
@@ -255,8 +265,8 @@ function hex(c){return[parseInt(c.slice(1,3),16),parseInt(c.slice(3,5),16),parse
 function lerp(a,b,t){const x=hex(a),y=hex(b);return'#'+[0,1,2].map(i=>Math.round(x[i]+(y[i]-x[i])*t).toString(16).padStart(2,'0')).join('')}
 
 // ---- filter state ----
-const st={pass:true,common:false,vaf:0,cls:{I:true,II:true,III:true,'':true},smp:''};
-function filtered(){return ALL.filter(c=>(!st.pass||c.pass)&&(!st.common||c.common)&&c.vaf>=st.vaf&&(st.cls[c.cls]!==false)&&(!st.smp||c.smp.toLowerCase().includes(st.smp)))}
+const st={pass:true,common:false,vaf:0,cls:{I:true,II:true,III:true,'':true},smp:'',jsup:{HIGH:true,MOD:true,LOW:true,'':true},minjr:0};
+function filtered(){return ALL.filter(c=>(!st.pass||c.pass)&&(!st.common||c.common)&&c.vaf>=st.vaf&&(st.cls[c.cls]!==false)&&(st.jsup[c.jsup]!==false)&&(c.jr>=st.minjr)&&(!st.smp||c.smp.toLowerCase().includes(st.smp)))}
 
 // ---- summary cards ----
 function cards(cs){
@@ -332,7 +342,7 @@ function linear(cs){
   const c=$('lin');c.innerHTML='';c.appendChild(svg);
   // tooltip
   const tip=$('tip');svg.addEventListener('mousemove',e=>{const t=e.target;if(t.__c){const c=t.__c;
-    tip.innerHTML=`<b>${c.smp}</b><br>m.${c.bp5+1}_${c.end}del · ${c.len.toLocaleString()} bp<br>VAF ${pct(c.vaf)} (junction ${pct(c.afj)}) · class ${c.cls} · ${c.filter}`+(c.genes?'<br><span class="muted">'+c.genes+'</span>':'')+(c.flags?'<br><span class="muted">'+c.flags+'</span>':'');
+    tip.innerHTML=`<b>${c.smp}</b><br>m.${c.bp5+1}_${c.end}del · ${c.len.toLocaleString()} bp<br>VAF ${pct(c.vaf)} (junction ${pct(c.afj)}) · class ${c.cls} · ${c.filter}<br><span class="muted">split reads JR=${c.jr} · evidence ${c.jsup}${c.claim?'/'+c.claim:''} · strand-bal ${c.srsb.toFixed(2)}</span>`+(c.genes?'<br><span class="muted">'+c.genes+'</span>':'')+(c.flags?'<br><span class="muted">'+c.flags+'</span>':'');
     const b=c.getBoundingClientRect?null:null;tip.style.opacity=1;tip.style.left=(e.offsetX+14)+'px';tip.style.top=(e.offsetY-10)+'px'}else tip.style.opacity=0});
   svg.addEventListener('mouseleave',()=>tip.style.opacity=0);
 }
@@ -373,13 +383,17 @@ function render(){const cs=filtered();cards(cs);circle(cs);linear(cs);
 // ---- wire controls ----
 function ui(){
   $('fcls').innerHTML=['I','II','III'].map(k=>`<label class="chk"><input type="checkbox" data-cls="${k}" checked> ${k}</label>`).join('');
+  $('fjsup').innerHTML=['HIGH','MOD','LOW'].map(k=>`<label class="chk" title="${k=='HIGH'?'consistent, >=MINJR reads, two-strand':k=='MOD'?'clean junction but low-count / one-strand (credible low-level)':'scattered breakpoint sizes (likely artifact)'}"><input type="checkbox" data-jsup="${k}" checked> ${k}</label>`).join('');
   $('fpass').onchange=e=>{st.pass=e.target.checked;render()};
   $('fcommon').onchange=e=>{st.common=e.target.checked;render()};
   $('fvaf').oninput=e=>{st.vaf=+e.target.value;$('fvafv').textContent=pct(st.vaf);render()};
+  $('fjr').oninput=e=>{st.minjr=+e.target.value;$('fjrv').textContent=e.target.value;render()};
   $('fsmp').oninput=e=>{st.smp=e.target.value.trim().toLowerCase();render()};
   document.querySelectorAll('[data-cls]').forEach(b=>b.onchange=e=>{st.cls[e.target.dataset.cls]=e.target.checked;render()});
-  $('reset').onclick=()=>{st.pass=true;st.common=false;st.vaf=0;st.smp='';st.cls={I:true,II:true,III:true,'':true};
-    $('fpass').checked=true;$('fcommon').checked=false;$('fvaf').value=0;$('fvafv').textContent='0%';$('fsmp').value='';document.querySelectorAll('[data-cls]').forEach(b=>b.checked=true);render()};
+  document.querySelectorAll('[data-jsup]').forEach(b=>b.onchange=e=>{st.jsup[e.target.dataset.jsup]=e.target.checked;render()});
+  $('reset').onclick=()=>{st.pass=true;st.common=false;st.vaf=0;st.smp='';st.cls={I:true,II:true,III:true,'':true};st.jsup={HIGH:true,MOD:true,LOW:true,'':true};st.minjr=0;
+    $('fpass').checked=true;$('fcommon').checked=false;$('fvaf').value=0;$('fvafv').textContent='0%';$('fsmp').value='';$('fjr').value=0;$('fjrv').textContent='0';
+    document.querySelectorAll('[data-cls]').forEach(b=>b.checked=true);document.querySelectorAll('[data-jsup]').forEach(b=>b.checked=true);render()};
   legend();
   const TH=['auto','light','dark'];let ti=0;
   try{const s=localStorage.getItem('svtheme');if(s){const i=TH.indexOf(s);if(i>=0)ti=i}}catch(e){}

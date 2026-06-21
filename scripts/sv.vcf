@@ -29,6 +29,9 @@
 ##INFO=<ID=AFC,Number=1,Type=Float,Description="Coverage-dosage heteroplasmy (PRIMARY) = 1 - trimmedMedian(inside)/trimmedMedian(flank), with D-loop/origin/HP/NUMT masking and an HP_SV_TRANS transition pad (eKLIPse/MitoSAlt/Damas convention)">
 ##INFO=<ID=AFDIFF,Number=1,Type=Float,Description="abs(AFJ-AFC) junction-vs-dosage consistency QC; large => coverage drop not junction-corroborated">
 ##INFO=<ID=CVGR,Number=1,Type=Float,Description="masked trimmedMedian(inside)/trimmedMedian(flank) coverage ratio (1 = no drop)">
+##INFO=<ID=SRCONS,Number=1,Type=Float,Description="Split-read consistency: fraction of supporting reads agreeing on the deletion SIZE (svlen, microhomology-invariant) within HP_SV_SRTOL bp; ~1=tight junction, low=scattered (likely artifact)">
+##INFO=<ID=SRSB,Number=1,Type=Float,Description="Split-read strand balance min(+,-)/total of supporting reads (0=one-strand-only, a classic artifact signature; 0.5=balanced)">
+##INFO=<ID=JSUP,Number=1,Type=String,Description="Split-read evidence tier (depth-independent curation lens): HIGH=consistent, >=HP_SV_MINJR reads, two-strand; MOD=clean/consistent junction but low-count or one-strand (credible low-level event); LOW=scattered breakpoint sizes (likely a mapping/NUMT artifact)">
 ##INFO=<ID=REPEAT,Number=0,Type=Flag,Description="Breakpoint near the del4977 13bp direct repeat (m.8470-8482 / 13447-13459)">
 ##INFO=<ID=NUMT,Number=0,Type=Flag,Description="Breakpoint overlaps a known NUMT-like site (RefSeq/NUMT.vcf.gz)">
 ##INFO=<ID=HP,Number=0,Type=Flag,Description="Breakpoint inside a homopolymer run (RefSeq/HP.bed.gz)">

@@ -1,11 +1,12 @@
 ##fileformat=VCFv4.2
-##fileDate=20260620
+##fileDate=20260621
 ##source=MitoHPC_callsv (example output)
 ##reference=file://./RefSeq/chrM.fa
 ##contig=<ID=chrM,length=16569,md5=c68f52674c9fb33aef52dcf399755519>
 ##sample=sv_del4977_h30
-##callsv_command="./scripts/callsv.py --bam ./test/sv/bams/sv_del4977_h30.bam --ref ./RefSeq/chrM.fa --header ./scripts/sv.vcf --sample sv_del4977_h30 --out ./out/out/sv_del4977_h30/sv_del4977_h30.sv.vcf --tab ./out/out/sv_del4977_h30/sv_del4977_h30.sv.tab --version example --chrom chrM --mtlen 16569 --minmapq 20 --minjr 3 --minsize 50 --maxsize 0 --pad 25 --drop 0.9 --flank 200 --mindepth 0 --trans 150 --minaf 0.03 --minafj 0.02 --affrac 0.30 --strongafj 0.05 --strongjr 10 --bigdel 8000 --bigminjr 8 --bigminafj 0.02 --jminjr 8 --jminafj 0.05 --gainpad 0.10 --hp ./RefSeq/HP.bed.gz --numt ./RefSeq/NUMT.vcf.gz --dloop ./RefSeq/DLOOP.bed.gz --genes ./RefSeq/genes.bed.gz"
+##callsv_command="./scripts/callsv.py --bam ./test/sv/bams/sv_del4977_h30.bam --ref ./RefSeq/chrM.fa --header ./scripts/sv.vcf --sample sv_del4977_h30 --out ./out/out/sv_del4977_h30/sv_del4977_h30.sv.vcf --tab ./out/out/sv_del4977_h30/sv_del4977_h30.sv.tab --version example --chrom chrM --mtlen 16569 --minmapq 20 --minclip 10 --minjr 3 --minsize 50 --maxsize 0 --pad 25 --drop 0.9 --flank 200 --mindepth 0 --trans 150 --minaf 0.03 --minafj 0.02 --affrac 0.30 --strongafj 0.05 --strongjr 10 --bigdel 8000 --bigminjr 8 --bigminafj 0.02 --jminjr 8 --jminafj 0.05 --gainpad 0.10 --srtol 5 --srmincons 0.7 --srminsb 0.1 --hp ./RefSeq/HP.bed.gz --numt ./RefSeq/NUMT.vcf.gz --dloop ./RefSeq/DLOOP.bed.gz --genes ./RefSeq/genes.bed.gz"
 ##callsv_param_HP_SV_MINMAPQ=20
+##callsv_param_HP_SV_MINCLIP=10
 ##callsv_param_HP_SV_MINJR=3
 ##callsv_param_HP_SV_MINSIZE=50
 ##callsv_param_HP_SV_MAXSIZE=0
@@ -25,6 +26,9 @@
 ##callsv_param_HP_SV_JMINJR=8
 ##callsv_param_HP_SV_JMINAFJ=0.05
 ##callsv_param_HP_SV_GAINPAD=0.1
+##callsv_param_HP_SV_SRTOL=5
+##callsv_param_HP_SV_SRMINCONS=0.7
+##callsv_param_HP_SV_SRMINSB=0.1
 ##ALT=<ID=DEL,Description="Deletion">
 ##FILTER=<ID=PASS,Description="Split-read junction corroborated by a coverage drop">
 ##FILTER=<ID=lowJR,Description="Fewer than HP_SV_MINJR junction-supporting reads">
@@ -56,6 +60,9 @@
 ##INFO=<ID=AFC,Number=1,Type=Float,Description="Coverage-dosage heteroplasmy (PRIMARY) = 1 - trimmedMedian(inside)/trimmedMedian(flank), with D-loop/origin/HP/NUMT masking and an HP_SV_TRANS transition pad (eKLIPse/MitoSAlt/Damas convention)">
 ##INFO=<ID=AFDIFF,Number=1,Type=Float,Description="abs(AFJ-AFC) junction-vs-dosage consistency QC; large => coverage drop not junction-corroborated">
 ##INFO=<ID=CVGR,Number=1,Type=Float,Description="masked trimmedMedian(inside)/trimmedMedian(flank) coverage ratio (1 = no drop)">
+##INFO=<ID=SRCONS,Number=1,Type=Float,Description="Split-read consistency: fraction of supporting reads agreeing on the deletion SIZE (svlen, microhomology-invariant) within HP_SV_SRTOL bp; ~1=tight junction, low=scattered (likely artifact)">
+##INFO=<ID=SRSB,Number=1,Type=Float,Description="Split-read strand balance min(+,-)/total of supporting reads (0=one-strand-only, a classic artifact signature; 0.5=balanced)">
+##INFO=<ID=JSUP,Number=1,Type=String,Description="Split-read evidence tier (depth-independent curation lens): HIGH=consistent, >=HP_SV_MINJR reads, two-strand; MOD=clean/consistent junction but low-count or one-strand (credible low-level event); LOW=scattered breakpoint sizes (likely a mapping/NUMT artifact)">
 ##INFO=<ID=REPEAT,Number=0,Type=Flag,Description="Breakpoint near the del4977 13bp direct repeat (m.8470-8482 / 13447-13459)">
 ##INFO=<ID=NUMT,Number=0,Type=Flag,Description="Breakpoint overlaps a known NUMT-like site (RefSeq/NUMT.vcf.gz)">
 ##INFO=<ID=HP,Number=0,Type=Flag,Description="Breakpoint inside a homopolymer run (RefSeq/HP.bed.gz)">
@@ -67,4 +74,4 @@
 ##FORMAT=<ID=AF,Number=A,Type=Float,Description="Heteroplasmy = coverage-dosage AF (AFC): 1 - trimmedMedian(inside)/trimmedMedian(flank), D-loop/origin/HP/NUMT masked, HP_SV_TRANS transition pad">
 ##FORMAT=<ID=SR,Number=1,Type=Integer,Description="Split (junction) reads supporting the deletion (= JR; Manta-style per-sample split-read support)">
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sv_del4977_h30
-chrM	8482	.	A	<DEL>	.	PASS	SVTYPE=DEL;END=13446;SVLEN=-4964;SVCLAIM=DJ;IMPRECISE;CIPOS=0,13;CIEND=0,13;HOMLEN=13;HOMSEQ=ACCTCCCTCACCA;DELCLASS=I;GENE=ATP8:P,ATP6:F,COX3:F,TRNG:F,ND3:F,TRNR:F,ND4L:F,ND4:F,TRNH:F,TRNS2:F,TRNL2:F,ND5:P;NGENE=12;COMMON;HGVS=NC_012920.1:m.8483_13446del;JR=133;SR=401;AFJ=0.249;AFC=0.268;AFDIFF=0.019;CVGR=0.732;REPEAT	GT:DP:AD:AF:SR	0/1:575:401,133:0.268:133
+chrM	8482	.	A	<DEL>	.	PASS	SVTYPE=DEL;END=13446;SVLEN=-4964;SVCLAIM=DJ;IMPRECISE;CIPOS=0,13;CIEND=0,13;HOMLEN=13;HOMSEQ=ACCTCCCTCACCA;DELCLASS=I;GENE=ATP8:P,ATP6:F,COX3:F,TRNG:F,ND3:F,TRNR:F,ND4L:F,ND4:F,TRNH:F,TRNS2:F,TRNL2:F,ND5:P;NGENE=12;COMMON;HGVS=NC_012920.1:m.8483_13446del;JR=154;SR=401;AFJ=0.277;AFC=0.268;AFDIFF=0.010;CVGR=0.732;SRCONS=1.000;SRSB=0.496;JSUP=HIGH;REPEAT	GT:DP:AD:AF:SR	0/1:575:401,154:0.268:154

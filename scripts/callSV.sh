@@ -36,6 +36,7 @@ fi
 
 # tunables (defaults chosen for ~2000x subsampled chrM; override via init.sh)
 MINMAPQ=${HP_SV_MINMAPQ:-20}    # min MAPQ for split reads (drops NUMT multi-mappers)
+MINCLIP=${HP_SV_MINCLIP:-10}    # min soft-clip (bp) to harvest a clipped read onto an SA junction (0 off)
 MINJR=${HP_SV_MINJR:-3}         # min junction-supporting reads for PASS
 MINSIZE=${HP_SV_MINSIZE:-50}    # min deletion size (bp)
 MAXSIZE=${HP_SV_MAXSIZE:-0}     # max deletion size (0 => MTLEN-1)
@@ -58,6 +59,10 @@ BIGMINAFJ=${HP_SV_BIGMINAFJ:-0.02}  # min corrected AFJ for a very large deletio
 JMINJR=${HP_SV_JMINJR:-8}       # min JR for a junction-only (depth-independent) PASS
 JMINAFJ=${HP_SV_JMINAFJ:-0.05}  # min corrected AFJ for a junction-only PASS
 GAINPAD=${HP_SV_GAINPAD:-0.10}  # coverage-gain tolerance; ratio>1+GAINPAD => DUP (blocks junction-only PASS)
+# split-read evidence lens (SRCONS/SRSB/JSUP) — depth-independent junction-quality tier for curation
+SRTOL=${HP_SV_SRTOL:-5}            # bp tolerance on per-read deletion size for split-read consistency
+SRMINCONS=${HP_SV_SRMINCONS:-0.7} # min consistency for JSUP=MOD/HIGH (a clean, tight junction)
+SRMINSB=${HP_SV_SRMINSB:-0.1}     # min strand balance for JSUP=HIGH
 
 test -s "$BAM"
 test -s "$RDIR/$MT.fa"
@@ -80,12 +85,13 @@ fi
 "$PY" "$SDIR/callsv.py" \
   --bam "$BAM" --ref "$RDIR/$MT.fa" --header "$SDIR/sv.vcf" --sample "$S" \
   --out "$O.sv.vcf" --tab "$O.sv.tab" --version "$VER" \
-  --chrom "$MT" --mtlen "$MTLEN" --minmapq "$MINMAPQ" --minjr "$MINJR" \
+  --chrom "$MT" --mtlen "$MTLEN" --minmapq "$MINMAPQ" --minclip "$MINCLIP" --minjr "$MINJR" \
   --minsize "$MINSIZE" --maxsize "$MAXSIZE" --pad "$PAD" --drop "$DROP" \
   --flank "$FLANK" --mindepth "$MINDP" \
   --trans "$TRANS" --minaf "$MINAF" --minafj "$MINAFJ" --affrac "$AFFRAC" \
   --strongafj "$STRONGAFJ" --strongjr "$STRONGJR" --bigdel "$BIGDEL" \
   --bigminjr "$BIGMINJR" --bigminafj "$BIGMINAFJ" \
-  --jminjr "$JMINJR" --jminafj "$JMINAFJ" --gainpad "$GAINPAD" $maskopt
+  --jminjr "$JMINJR" --jminafj "$JMINAFJ" --gainpad "$GAINPAD" \
+  --srtol "$SRTOL" --srmincons "$SRMINCONS" --srminsb "$SRMINSB" $maskopt
 
 echo "[callSV] $S -> $O.sv.vcf ($(grep -vc '^#' "$O.sv.vcf") records)" >&2

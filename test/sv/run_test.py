@@ -156,6 +156,11 @@ def check_sample(name, events, outdir):
         if het >= HI_HET and m["filter"] != "PASS":
             all_ok = False
             sub.append("want PASS got %s" % m["filter"])
+        # split-read evidence lens: a true simulated deletion is a clean, consistent junction, so it
+        # must be JSUP HIGH/MOD (not the LOW artifact tier) with high size-consistency.
+        if m.get("jsup") == "LOW" or fnum(m.get("srcons")) is not None and fnum(m["srcons"]) < 0.7:
+            all_ok = False
+            sub.append("JSUP=%s SRCONS=%s (want HIGH/MOD)" % (m.get("jsup"), m.get("srcons")))
         if is_del4977(bp5, bp3):
             if m["common"] != "1":
                 all_ok = False; sub.append("COMMON!=1")

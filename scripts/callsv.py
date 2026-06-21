@@ -184,7 +184,7 @@ def fasta_md5(seq):
 # --------------------------------------------------------------------------- #
 # Stage A: split-read deletion junctions (replaces sa2del.pl)
 # --------------------------------------------------------------------------- #
-def extract_junctions(bam, chrom, minmapq, minsize, maxsize, pad, minsupport, mtlen):
+def extract_junctions(bam, chrom, minmapq, minsize, maxsize, pad, minsupport, mtlen, minclip=0, srtol=5):
     """Return clustered junctions: list of (bp5, bp3, svlen, JR, strand).
 
     SA-tag coordinates may live in the circularized chrMC extension (>mtlen, since circSam.pl
@@ -243,22 +243,66 @@ def extract_junctions(bam, chrom, minmapq, minsize, maxsize, pad, minsupport, mt
         else:
             clusters.append({"pts": [p]})
 
-    out = []
+    candidates = []   # [bp5, bp3, svlen, strand, tids, srcons, srsb]
     for c in clusters:
-        ups = [p[0] for p in c["pts"]]
-        dns = [p[1] for p in c["pts"]]
-        strands = [p[3] for p in c["pts"]]
-        jr = len({p[2] for p in c["pts"]})
-        if jr < minsupport:
+        pts = c["pts"]
+        tids = {p[2] for p in pts}
+        if len(tids) < minsupport:
             continue
-        bp5, bp3, strand = mode(ups), mode(dns), mode(strands)
+        bp5 = mode([p[0] for p in pts])
+        bp3 = mode([p[1] for p in pts])
+        strand = mode([p[3] for p in pts])
         if not (1 <= bp5 <= mtlen and 1 <= bp3 <= mtlen):   # keep VCF POS/END within the contig
             continue
         svlen = bp3 - bp5 - 1
         if svlen < minsize or svlen > maxsize:
             continue
-        out.append((bp5, bp3, svlen, jr, strand))
-    return out
+        # split-read evidence quality (independent of read depth):
+        #   srcons = breakpoint CONSISTENCY, measured on the per-read deletion SIZE (svlen), not the
+        #     absolute breakpoint — a direct repeat slides bp5/bp3 together but CONSERVES svlen, so a
+        #     clean del4977 scores ~1.0 despite the 13bp microhomology spread, while reads pointing at
+        #     scattered sizes (mapping noise) score low. This is what makes a tight 4-5 read cluster
+        #     credible vs a same-count smear of artifacts.
+        #   srsb   = strand balance min(+,-)/total (0 = one-strand-only, a classic artifact signature).
+        sizes = [p[1] - p[0] - 1 for p in pts]
+        msize = mode(sizes)
+        srcons = sum(1 for v in sizes if abs(v - msize) <= srtol) / len(sizes)
+        nf = sum(1 for p in pts if p[3] == "+")
+        srsb = min(nf, len(pts) - nf) / len(pts)
+        candidates.append([bp5, bp3, svlen, strand, set(tids), srcons, srsb])
+
+    # Soft-clip harvesting (REINFORCE-ONLY): a deletion read whose clipped arm is too short for the
+    # aligner to emit an SA tag still soft-clips AT the breakpoint (empirically ~10-15% of
+    # breakpoint-clipped reads, clips ≤16 bp). Add such reads to an EXISTING SA-supported junction's
+    # support, matched by clip position within `pad` — this recovers the JR/AFJ those reads carry
+    # (raising low-heteroplasmy sensitivity) while NEVER creating a junction not already evidenced by
+    # ≥minsupport split reads, so it cannot fabricate calls. A trailing soft-clip ending near bp5, or
+    # a leading soft-clip starting near bp3, marks a read crossing that deletion junction.
+    if candidates and minclip > 0:
+        with pysam.AlignmentFile(bam, "rb") as af:
+            for r in af.fetch(chrom):
+                if r.is_unmapped or r.is_secondary or r.is_supplementary:
+                    continue
+                if r.mapping_quality < minmapq:
+                    continue
+                cig = r.cigartuples
+                if not cig:
+                    continue
+                tid = r.query_name
+                if cig[0][0] in (4, 5) and cig[0][1] >= minclip:            # leading clip -> bp3 side
+                    p = wrap1(r.reference_start + 1, mtlen)
+                    for cand in candidates:
+                        if abs(p - cand[1]) <= pad:
+                            cand[4].add(tid)
+                end = r.reference_end
+                if end and cig[-1][0] in (4, 5) and cig[-1][1] >= minclip:  # trailing clip -> bp5 side
+                    p = wrap1(end, mtlen)
+                    for cand in candidates:
+                        if abs(p - cand[0]) <= pad:
+                            cand[4].add(tid)
+
+    return [(bp5, bp3, svlen, len(tids), strand, srcons, srsb)
+            for (bp5, bp3, svlen, strand, tids, srcons, srsb) in candidates]
 
 
 # --------------------------------------------------------------------------- #
@@ -354,7 +398,8 @@ def spanning_count(span_by_b, bp5, bp3):
 # tidy/long TSV column order (parse by NAME downstream, not position)
 TAB_COLUMNS = ["sample", "chrom", "pos_bp5", "end_bp3", "svlen", "svclaim", "jr", "sr",
                "af_junction", "af_coverage", "afdiff", "cvgr", "flank_dp", "homlen",
-               "homseq", "delclass", "common", "ngene", "gene_list", "hgvs", "filter", "flags"]
+               "homseq", "delclass", "common", "ngene", "gene_list", "hgvs", "filter", "flags",
+               "srcons", "srsb", "jsup"]   # split-read evidence lens (depth-independent)
 
 
 def call(args):
@@ -366,11 +411,11 @@ def call(args):
     fa.close()
 
     junctions = extract_junctions(args.bam, args.chrom, args.minmapq,
-                                  args.minsize, maxsize, args.pad, args.minsupport, m)
+                                  args.minsize, maxsize, args.pad, args.minsupport, m,
+                                  args.minclip, args.srtol)
     dep = per_base_depth(args.bam, args.chrom, m)
     # wild-type spanning reads for every junction boundary, in ONE BAM pass (not per junction)
-    boundaries = [bp5 for (bp5, _b3, _s, _j, _st) in junctions]
-    boundaries += [bp3 - 1 for (_b5, bp3, _s, _j, _st) in junctions]
+    boundaries = [j[0] for j in junctions] + [j[1] - 1 for j in junctions]
     span_by_b = count_spanning_boundaries(args.bam, args.chrom, boundaries, args.minmapq)
 
     hp = load_bed_gz(args.hp)
@@ -388,13 +433,22 @@ def call(args):
 
     vcf_records = []
     tab_rows = []
-    for (bp5, bp3, svlen, jr, strand) in junctions:
+    for (bp5, bp3, svlen, jr, strand, srcons, srsb) in junctions:
         end = bp3 - 1
 
         # --- (1) junction VAF with the CORRECTED denominator: true wild-type spanning reads,
         #         not the whole pileup. AFJ now tracks heteroplasmy at any depth. ---------------
         sr = spanning_count(span_by_b, bp5, bp3)
         afj = jr / (jr + sr) if (jr + sr) > 0 else 0.0
+
+        # --- split-read EVIDENCE LENS (independent of read depth): a tier from the consistency
+        #     (srcons) + strand balance (srsb) of the split reads, so a clean, tight junction with
+        #     even a few reads is curatable apart from depth. HIGH = well-supported, consistent,
+        #     two-strand; MOD = clean junction but low count or one-strand (credible low-level event);
+        #     LOW = scattered breakpoint sizes (likely a mapping/NUMT artifact). ---------------
+        jsup = ("HIGH" if (srcons >= args.srmincons and jr >= args.minjr and srsb >= args.srminsb)
+                else "MOD" if srcons >= args.srmincons
+                else "LOW")
 
         # --- (2) coverage-dosage VAF = PRIMARY heteroplasmy: 1 - trimmed_median(inside)/flank
         #         over masked, transition-excluded windows (eKLIPse/MitoSAlt/Damas convention) ---
@@ -503,7 +557,8 @@ def call(args):
             info.append("COMMON")
         info.append("HGVS=%s" % hgvs)
         info += ["JR=%d" % jr, "SR=%d" % sr, "AFJ=%.3f" % afj, "AFC=%.3f" % afc,
-                 "AFDIFF=%.3f" % afdiff, "CVGR=%.3f" % ratio]
+                 "AFDIFF=%.3f" % afdiff, "CVGR=%.3f" % ratio,
+                 "SRCONS=%.3f" % srcons, "SRSB=%.3f" % srsb, "JSUP=%s" % jsup]
         info += flags
 
         # FORMAT AF carries the PRIMARY (coverage-dosage) heteroplasmy AFC, not AFJ; AD = SR,JR.
@@ -516,7 +571,8 @@ def call(args):
             "%.3f" % afj, "%.3f" % afc, "%.3f" % afdiff, "%.3f" % ratio, med_fl,
             homlen, homseq, delclass, 1 if common else 0, len(gene_list),
             ",".join(gene_list) if gene_list else ".", hgvs,
-            flt, ",".join(flags) if flags else "."]))
+            flt, ",".join(flags) if flags else ".",
+            "%.3f" % srcons, "%.3f" % srsb, jsup]))
 
     vcf_records.sort(key=lambda r: r[0])     # POS-sorted
     write_vcf(args, [r[1] for r in vcf_records], seq)
@@ -542,15 +598,16 @@ def write_vcf(args, records, seq):
     out.write('##callsv_command="%s"\n' % " ".join(sys.argv))
     # name each provenance line by its real HP_SV_* env var (the argparse key 'mindepth' is exposed
     # as HP_SV_MINDP in init.sh/callSV.sh, so don't emit the literal-uppercased 'MINDEPTH')
-    param_env = {"minmapq": "MINMAPQ", "minjr": "MINJR", "minsize": "MINSIZE", "maxsize": "MAXSIZE",
+    param_env = {"minmapq": "MINMAPQ", "minclip": "MINCLIP", "minjr": "MINJR", "minsize": "MINSIZE", "maxsize": "MAXSIZE",
                  "pad": "PAD", "drop": "DROP", "flank": "FLANK", "mindepth": "MINDP",
                  "trans": "TRANS", "minaf": "MINAF", "minafj": "MINAFJ", "affrac": "AFFRAC",
                  "strongafj": "STRONGAFJ", "strongjr": "STRONGJR", "bigdel": "BIGDEL",
                  "bigminjr": "BIGMINJR", "bigminafj": "BIGMINAFJ",
-                 "jminjr": "JMINJR", "jminafj": "JMINAFJ", "gainpad": "GAINPAD"}
-    for k in ("minmapq", "minjr", "minsize", "maxsize", "pad", "drop", "flank", "mindepth",
+                 "jminjr": "JMINJR", "jminafj": "JMINAFJ", "gainpad": "GAINPAD",
+                 "srtol": "SRTOL", "srmincons": "SRMINCONS", "srminsb": "SRMINSB"}
+    for k in ("minmapq", "minclip", "minjr", "minsize", "maxsize", "pad", "drop", "flank", "mindepth",
               "trans", "minaf", "minafj", "affrac", "strongafj", "strongjr", "bigdel",
-              "bigminjr", "bigminafj", "jminjr", "jminafj", "gainpad"):
+              "bigminjr", "bigminafj", "jminjr", "jminafj", "gainpad", "srtol", "srmincons", "srminsb"):
         out.write("##callsv_param_HP_SV_%s=%s\n" % (param_env[k], getattr(args, k)))
     with open(args.header) as h:                  # static ##ALT/##FILTER/##INFO/##FORMAT
         for line in h:
@@ -576,6 +633,7 @@ def main():
     p.add_argument("--chrom", default="chrM")
     p.add_argument("--mtlen", type=int, default=16569)
     p.add_argument("--minmapq", type=int, default=20)
+    p.add_argument("--minclip", type=int, default=10, help="min soft-clip length (bp) to harvest a clipped read onto an existing SA junction (0 disables)")
     p.add_argument("--minjr", type=int, default=3)
     p.add_argument("--minsize", type=int, default=50)
     p.add_argument("--maxsize", type=int, default=0)
@@ -597,6 +655,10 @@ def main():
     p.add_argument("--jminjr", type=int, default=8, help="min JR for a junction-only (depth-independent) PASS")
     p.add_argument("--jminafj", type=float, default=0.05, help="min corrected AFJ for a junction-only PASS")
     p.add_argument("--gainpad", type=float, default=0.10, help="coverage-gain tolerance; ratio>1+gainpad => DUP, blocks junction-only PASS")
+    # split-read evidence lens (SRCONS/SRSB/JSUP) — depth-independent junction quality for curation
+    p.add_argument("--srtol", type=int, default=5, help="bp tolerance on per-read deletion SIZE for the split-read consistency SRCONS")
+    p.add_argument("--srmincons", type=float, default=0.7, help="min SRCONS for JSUP=MOD/HIGH (a clean, consistent junction)")
+    p.add_argument("--srminsb", type=float, default=0.1, help="min strand balance SRSB for JSUP=HIGH")
     p.add_argument("--hp")
     p.add_argument("--numt")
     p.add_argument("--dloop")

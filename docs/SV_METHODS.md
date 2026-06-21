@@ -226,14 +226,13 @@ For each alignment record, keep it only if it is a **primary** alignment carryin
 - require `read.has_tag("SA")` (the supplementary mate was dropped upstream by `-F 0x90C`, but the
   tag remains on the primary — this is exactly the `$O.bam` representation).
 
-> **`JR` counts SA-tagged split reads only — a known, one-sided bias.** A read soft-clipped *at* the
-> breakpoint whose clipped arm is too short for the aligner to emit a supplementary alignment
-> (empirically ~15% of breakpoint-clipped reads on the test data, clip lengths ≤16 bp) is **not**
-> counted in `JR`. Because such a read also does not span the boundary, it is correctly excluded from
-> `SR` as well — so the omission is **one-sided and deflates `AFJ = JR/(JR+SR)`**, slightly lowering
-> sensitivity for thin, low-heteroplasmy junctions near the limit of detection (§11). Soft-clip
-> harvesting (clustering clip positions *against an existing SA-supported breakpoint*, so it can only
-> reinforce a junction, never fabricate one) is a planned v2 enhancement.
+> **Soft-clip harvesting recovers the SA-only `JR` bias (§4.4).** The aligner emits an `SA:Z:` tag
+> only when the clipped arm is long enough; a deletion read whose clipped arm is too short (~11–15% of
+> breakpoint-clipped reads on the test data, clips ≤16 bp) carries the junction as a **soft-clip with
+> no SA tag**, and was dropped from `JR` (and, being clipped, also from `SR`) — a one-sided
+> `AFJ = JR/(JR+SR)` deflation. The caller now **adds these clipped reads back** onto an existing
+> SA-supported breakpoint (`HP_SV_MINCLIP`, §4.4), raising `JR`/`AFJ` by ~10–16% and the PASS LoD from
+> ~8% to ~7% with no loss of specificity (real healthy samples stay 0 PASS).
 
 ### 4.2 Junction definition
 Two segments are reconstructed: the **primary** (from its `POS`+`CIGAR`) and the **first `SA`
@@ -279,6 +278,43 @@ silently fragmented into sub-`minsupport` pieces.) Per cluster:
 
 Clusters with `JR < 2` are dropped here (`-minsupport 2`); the PASS threshold `HP_SV_MINJR`
 (default 3) is applied later, so the 2-read tier is still visible as a non-PASS call.
+
+### 4.4 Soft-clip harvesting (reinforce-only)
+SA-only `JR` undercounts the junction (§4.1). After the SA clusters are fixed, a second pass adds
+**soft-clipped reads back onto an existing SA-supported breakpoint**: a read with a trailing soft-clip
+(≥ `HP_SV_MINCLIP`, default **10** bp) ending within `HP_SV_PAD` of `bp5`, or a leading soft-clip
+starting within `HP_SV_PAD` of `bp3`, is a read crossing that junction; its template is added to the
+cluster's support. This **only reinforces a junction already evidenced by ≥`minsupport` split reads —
+it can never create a call** (so the false-positive surface is unchanged: real healthy samples stay 0
+PASS), while recovering the ~11–15% of breakpoint-clipped reads the SA tag omits. Effect: `JR`/`AFJ`
+rise ~10–16% and the PASS limit of detection improves from ~8% to ~7% (del4977 @7% now PASSes). Set
+`HP_SV_MINCLIP=0` to disable. These harvested reads are clipped at the boundary, so they are still
+correctly *excluded* from `SR`, keeping `AFJ = JR/(JR+SR)` consistent.
+
+### 4.5 Split-read evidence lens (`JSUP` / `SRCONS` / `SRSB`)
+Split reads are **positional** evidence — they pin a breakpoint to a single base — so a handful of
+reads all clipping at the *same* base is strong evidence of a real junction even when read depth shows
+nothing (this is why general SV callers expose split-read support as its own dimension, e.g. LUMPY's
+`SU/SR` and Manta's `SR` vs `PR`). To make low-level events **curatable apart from depth**, the caller
+emits a depth-independent junction-quality lens per call:
+
+```
+SRCONS = fraction of supporting reads agreeing on the deletion SIZE (svlen) within HP_SV_SRTOL[5] bp
+         — measured on svlen, NOT the absolute breakpoint, because a direct repeat slides bp5/bp3
+         together but CONSERVES svlen, so a clean del4977 scores ~1.0 despite its 13 bp microhomology
+SRSB   = strand balance min(+,-)/total of the supporting reads (0 = one-strand-only; 0.5 = balanced)
+JSUP   = HIGH  if SRCONS ≥ HP_SV_SRMINCONS[0.7] and JR ≥ HP_SV_MINJR and SRSB ≥ HP_SV_SRMINSB[0.1]
+         MOD   if SRCONS ≥ HP_SV_SRMINCONS  (clean, consistent junction but low-count or one-strand —
+                                             a CREDIBLE low-level event worth manual review)
+         LOW   otherwise (scattered breakpoint sizes — a likely mapping / NUMT artifact)
+```
+
+`JSUP` is a **lens, not a gate** — it does not change PASS. Use it to triage: filter to `JSUP ∈
+{HIGH, MOD}` (with PASS off) to surface clean, low-heteroplasmy junctions that lack a depth signal
+(the tumor del4977-at-5% regime), and to down-rank `LOW`/strand-biased clusters as artifacts. The
+`sv.report.html` exposes it directly (a `JSUP` filter + a "min split reads (JR)" slider; §6.3).
+Computed from the SA reads (the well-characterised evidence); soft-clip-harvested reads count toward
+`JR` but not `SRCONS`/`SRSB`.
 
 ---
 
@@ -360,15 +396,26 @@ artifact filters: a coverage dip with no proportional junction (a NUMT / mappabi
 bowl, `AFJ ≈ 0`) is rejected on **both** paths. Genuine very-low-heteroplasmy deletions (where neither
 a clean dosage drop nor a strong junction is present) still land in a non-PASS tier with full evidence.
 
-**Sensitivity (titration).** A heteroplasmy × depth titration of del4977
-(`test/sv/titration.py`; committed result `test/sv/real/titration_del4977.tsv`) shows the deletion is
-**detected at 100% down to 2%** heteroplasmy (real variants are never lost — below the PASS threshold
-they are surfaced as non-PASS records with full evidence) and reaches **PASS at ≥8%** at 1,000–4,000×:
-the **junction-strong (J) path delivers the 8% tier** (clean reads, no clean dosage drop yet) and the
-DJ path takes over at ≥10%. `AFC` tracks the spiked heteroplasmy (0.09 @8%, 0.12 @10%, 0.18 @20%,
-0.50 @50%). To push the PASS LoD toward ~5%, lower `HP_SV_JMINAFJ` to ~0.035 (at 5% the corrected
-`AFJ` is ~0.036–0.040) — safe vs. the real-data artifacts, which sit at `AFJ ≈ 0`, far below — at some
-cost to specificity; calibrate per cohort.
+**Sensitivity (titration + real-background spike).** A heteroplasmy × depth titration of del4977
+(`test/sv/titration.py`; committed `test/sv/real/titration_del4977.tsv`) and a del4977 spiked into the
+**real** NA12718 background (`gen_spike.sh`) agree: the deletion is **detected 100% down to 2%**
+heteroplasmy (real variants are never lost — below the PASS threshold they are surfaced as non-PASS
+records with full evidence), and **PASSes at ≥7%** with soft-clip harvesting on (§4.4; the J path
+delivers the 7–8% tier, DJ takes over at ≥10%). `AFC` tracks the spiked fraction (0.04 @5%, 0.05 @8%,
+0.08 @10%, 0.50 @50%). A **sensitive mode** `HP_SV_JMINAFJ=0.04` reaches a **~5% PASS LoD** (the 5%
+spike then PASSes via the J path) and was verified to keep the healthy real samples at **0 PASS** —
+the real-data artifacts sit at `AFJ ≈ 0`, far below, so there is headroom. Use it for tissue/tumor
+cohorts (see the tissue note below); calibrate per cohort.
+
+> **Tissue matters more than the caller.** The "common deletion" del4977 is a low-abundance biomarker,
+> not a high-heteroplasmy clonal event in most samples: ~0.01–0.2% in **blood/buccal**, 0.0001–0.14% in
+> aged **muscle**, and 0.0001–**7%** in **solid tumor** (often *lower* than adjacent normal — it is
+> selected against in proliferating cells). These are **below** even a ~5% short-read-WGS PASS LoD, so
+> **0 PASS large deletions in a blood/buccal cohort is the expected, correct result** — not a caller
+> failure (no short-read method, incl. eKLIPse/MitoSAlt, calls a 0.1% deletion). Callable
+> heteroplasmy (20–90%) occurs in **single-large-scale-deletion disease tissue** (Kearns-Sayre / CPEO /
+> Pearson — muscle; adult blood is often negative). The high end of tumor del4977 (~5–7%) is exactly
+> where soft-clip harvesting + the sensitive mode help.
 
 ### 5.4 False-positive / annotation flags (`INFO`)
 | Flag | Meaning (fires if either breakpoint matches) |
@@ -424,6 +471,7 @@ chrM  8482  .  A  <DEL>  .  PASS  SVTYPE=DEL;END=13446;SVLEN=-4964;SVCLAIM=DJ;IM
 | `HGVS` | approximate `NC_012920.1:m.<a>_<b>del` |
 | `JR`,`SR` (INFO) | junction (split) reads / wild-type **spanning** reads (`SR` = AFJ denominator). Note: the **FORMAT** `SR` is a *different* quantity (split reads = `JR`, Manta-style); the two share the token by VCF convention |
 | `AFC`,`AFJ`,`AFDIFF`,`CVGR` | **primary heteroplasmy** (coverage dosage) / junction fraction (evidence) / disagreement QC / coverage ratio |
+| `JSUP`,`SRCONS`,`SRSB` | split-read evidence lens (§4.5): junction-support tier `HIGH`/`MOD`/`LOW` / size-consistency / strand balance — depth-independent, for curating low-level junctions |
 | flags | `REPEAT NUMT HP DLOOP WRAP` (advisory breakpoint-region flags) |
 | `FORMAT GT:DP:AD:AF:SR` | `0/1 : round(maskedFlankDepth) : SR,JR : AFC : JR` — `AF` carries the coverage-dosage heteroplasmy (`AFC`); `AD` = REF(spanning),ALT(junction); FORMAT `SR` = split reads (`JR`), Manta-style |
 
@@ -444,7 +492,8 @@ Separate from `getSummary.sh` (never touched). bgzip+tabix-indexes each per-samp
 - **`$ODIR/sv.report.html`** — a self-contained, offline **interactive report** (`svReport.py`,
   vanilla SVG/JS, no dependencies): a circular mtDNA map + linear genome browser with gene /
   OXPHOS-complex annotation, a per-position deletion-frequency track, VAF-coloured calls, live
-  filtering (PASS / VAF / class / common / sample), summary cards, VAF & size histograms, and a
+  filtering (PASS / VAF / class / common / sample / **split-read evidence `JSUP` + min-JR**, §4.5),
+  summary cards, VAF & size histograms, and a
   recurrence table. Follows the system light/dark theme with a manual toggle. Open it in any browser.
 
 (No single mixed-sample concatenated VCF is produced — different sample columns can't share one VCF;
@@ -459,6 +508,7 @@ a cohort; positional/fuzzy merging is a future refinement.)
 |---|---|---|
 | `HP_SV` | *(empty)* | `callsv` enables the module; empty = off |
 | `HP_SV_MINMAPQ` | 20 | min MAPQ for split reads (NUMT multimapper guard) |
+| `HP_SV_MINCLIP` | 10 | min soft-clip (bp) to harvest a clipped read onto an existing SA junction (§4.4); `0` disables |
 | `HP_SV_MINJR` | 3 | min distinct junction reads for a PASS deletion |
 | `HP_SV_MINSIZE` | 50 | min deletion size (bp); separates from small indels |
 | `HP_SV_MAXSIZE` | 0 | max deletion size (bp); `0` ⇒ `mtlen-1` |
@@ -478,6 +528,9 @@ a cohort; positional/fuzzy merging is a future refinement.)
 | `HP_SV_JMINJR` | 8 | min `JR` for a **junction-strong** (depth-independent) PASS |
 | `HP_SV_JMINAFJ` | 0.05 | min corrected `AFJ` for a junction-strong PASS (lower ⇒ more sensitive, less specific) |
 | `HP_SV_GAINPAD` | 0.10 | coverage-gain tolerance; `CVGR > 1+GAINPAD` ⇒ duplication, blocks the junction-strong path |
+| `HP_SV_SRTOL` | 5 | bp tolerance on per-read deletion size for the split-read consistency `SRCONS` (§4.5) |
+| `HP_SV_SRMINCONS` | 0.7 | min `SRCONS` for `JSUP`=MOD/HIGH (a clean, consistent junction) |
+| `HP_SV_SRMINSB` | 0.1 | min strand balance `SRSB` for `JSUP`=HIGH |
 
 > **v2 calibration caveat.** The dosage/consistency thresholds above are defaults validated on the
 > simulated mocks plus real 1000G high-coverage chrM (healthy → 0 PASS); they are **not** yet locked
@@ -614,6 +667,26 @@ SV caller no longer shells out to them.
 
 ## Changelog
 
+- **v2.4 (split-read evidence lens — `JSUP`/`SRCONS`/`SRSB`):** split reads are *positional* evidence
+  (single-base breakpoint), so a few reads all clipping at the same base is strong even when depth is
+  silent (cf. LUMPY `SR`, Manta `SR` vs `PR`). The caller now emits a depth-independent junction-quality
+  lens per call: `SRCONS` (fraction of reads agreeing on the deletion *size* — microhomology-invariant,
+  so del4977 scores ~1.0 despite its 13 bp repeat), `SRSB` (strand balance; one-strand-only flags
+  artifacts), and a `JSUP` tier (HIGH / MOD = *credible low-level* / LOW = scattered artifact). It is a
+  **lens, not a gate** (PASS unchanged). The `sv.report.html` gains a `JSUP` filter + a "min split reads
+  (JR)" slider so a handful of consistent low-heteroplasmy junctions (the tumor del4977-at-5% regime)
+  can be curated apart from depth-supported calls. New `HP_SV_SRTOL/SRMINCONS/SRMINSB`; new INFO
+  `SRCONS/SRSB/JSUP` + 3 tab columns. Suite 24/24; mock del4977 → JSUP=HIGH, SRCONS=1.0.
+- **v2.3 (soft-clip harvesting — low-heteroplasmy sensitivity):** prompted by a real cohort
+  (blood/buccal/tumor) showing 0 PASS deletions. Research confirmed this is expected for blood/buccal
+  (del4977 ~0.01–0.2%) and that tumor del4977 (~0.0001–7%) sits just below the old ~8% LoD. The
+  SA-tag-only `JR` was dropping ~11% of breakpoint-clipped reads (clips ≤16 bp); `extract_junctions`
+  now **harvests soft-clipped reads onto an existing SA-supported junction** (`HP_SV_MINCLIP`=10,
+  reinforce-only — cannot create a call), raising `JR`/`AFJ` ~10–16% and the **PASS LoD from ~8% to
+  ~7%** (del4977 @7% now PASSes; @5% via the documented sensitive mode `HP_SV_JMINAFJ=0.04`). Verified:
+  mock positives still PASS (del4977 AFJ 0.25→0.28), mock negatives + 3 real healthy samples still
+  **0 PASS** (specificity unchanged), suite 24/24. Detection is 100% to 2% throughout. Added a
+  tissue-prevalence note (§5.3) so "0 PASS in blood" is read correctly, not as a caller failure.
 - **v2.2 (split-read robustness, real-background positive control, abbreviation/doc audit):** an
   adversarial multi-agent audit (abbreviations, doc-vs-code, split-read expert review, real-data
   validity) drove: (code) `JR` now dedupes on the **template** (`query_name`) like `SR`, so
