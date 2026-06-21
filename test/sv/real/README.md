@@ -1,0 +1,33 @@
+# Real-data litmus (1000 Genomes high-coverage chrM)
+
+Small, committed **real** mitochondrial alignments used as a specificity check for the SV caller,
+complementing the simulated mocks in `../bams/`. These are healthy blood samples with no expected
+large mtDNA deletion, so the caller must return **zero PASS** calls — a real-world false-positive
+guard that the simulated data cannot provide (real NUMT-derived reads, real D-loop complexity, real
+error profiles).
+
+| file | sample | source | depth |
+|---|---|---|---|
+| `NA12718.chrM.bam` | NA12718 (CEU) | 1000G 30x high-cov, ENA `ERR3239480` | ~2400× |
+| `NA12748.chrM.bam` | NA12748 (CEU) | 1000G 30x high-cov, ENA `ERR3239481` | ~2400× |
+
+Each is the **circular-aware `$O.bam`** (chrM reads extracted from the public GRCh38 CRAM — GRCh38
+chrM == rCRS == `RefSeq/chrM.fa` — subsampled to the pipeline's working depth, then realigned
+through `minimap2 -ax sr chrMC → -F 0x90C → circSam.pl`). 1000G high-coverage data is open-access
+(consented for public release); committing chrM-only subsets is permitted.
+
+## Regenerate / extend
+
+```bash
+HP_SDIR=../../scripts HP_RDIR=../../RefSeq bash gen_real.sh           # ~2000x (committed size)
+HP_SDIR=../../scripts HP_RDIR=../../RefSeq bash gen_real.sh 16000     # full depth (stress test, large)
+```
+Add rows to `SAMPLES` in `gen_real.sh` to widen the panel (sample, https CRAM URL from the 1000G
+high-cov `sequence.index`). Needs `samtools` + `minimap2` and network access.
+
+## Why depth matters
+
+mtDNA copy number makes raw chrM depth ~8,000–22,000×. The spurious-call artifacts that motivated
+the v2 redesign (junction-noise deletions with a meaningless junction VAF) emerge mainly at **full**
+depth; at the committed ~2000× the redesigned caller is already clean. To reproduce the artifacts
+(and confirm v2 still rejects them), regenerate at full depth — see `docs/SV_METHODS.md` §0/§5.

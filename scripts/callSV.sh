@@ -43,6 +43,16 @@ PAD=${HP_SV_PAD:-25}            # breakpoint clustering / repeat tolerance (bp)
 DROP=${HP_SV_DROP:-0.9}         # max medInside/medFlank to confirm a deletion (<=0.9 => >=10% drop)
 FLANK=${HP_SV_FLANK:-200}       # flanking window for the coverage ratio (bp)
 MINDP=${HP_SV_MINDP:-0}         # min flank depth for PASS (0 => disabled)
+# v2 heteroplasmy + consistency gates (coverage-dosage primary AF; depth-robust junction corroboration)
+TRANS=${HP_SV_TRANS:-150}       # transition pad excluded from the dosage windows (>= read length)
+MINAF=${HP_SV_MINAF:-0.03}      # min coverage-dosage AF (AFC) for PASS
+MINAFJ=${HP_SV_MINAFJ:-0.02}    # min corrected junction VAF (AFJ) for PASS
+AFFRAC=${HP_SV_AFFRAC:-0.30}    # AFJ must be >= AFFRAC*AFC (drop must be junction-corroborated)
+STRONGAFJ=${HP_SV_STRONGAFJ:-0.05}  # junction strength to PASS in a fragile (D-loop/NUMT/origin) region
+STRONGJR=${HP_SV_STRONGJR:-10}      # junction-read count to PASS in a fragile region
+BIGDEL=${HP_SV_BIGDEL:-8000}    # "very large" deletion threshold (bp)
+BIGMINJR=${HP_SV_BIGMINJR:-8}   # min JR for a very large deletion
+BIGMINAFJ=${HP_SV_BIGMINAFJ:-0.02}  # min corrected AFJ for a very large deletion
 
 test -s "$BAM"
 test -s "$RDIR/$MT.fa"
@@ -67,6 +77,9 @@ fi
   --out "$O.sv.vcf" --tab "$O.sv.tab" --version "$VER" \
   --chrom "$MT" --mtlen "$MTLEN" --minmapq "$MINMAPQ" --minjr "$MINJR" \
   --minsize "$MINSIZE" --maxsize "$MAXSIZE" --pad "$PAD" --drop "$DROP" \
-  --flank "$FLANK" --mindepth "$MINDP" $maskopt
+  --flank "$FLANK" --mindepth "$MINDP" \
+  --trans "$TRANS" --minaf "$MINAF" --minafj "$MINAFJ" --affrac "$AFFRAC" \
+  --strongafj "$STRONGAFJ" --strongjr "$STRONGJR" --bigdel "$BIGDEL" \
+  --bigminjr "$BIGMINJR" --bigminafj "$BIGMINAFJ" $maskopt
 
 echo "[callSV] $S -> $O.sv.vcf ($(grep -vc '^#' "$O.sv.vcf") records)" >&2

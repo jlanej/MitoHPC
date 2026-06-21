@@ -31,9 +31,10 @@ fraction. We extract split-read junctions, cluster the reads that support the sa
 and call a deletion **only when a clustered junction and a corroborating coverage drop coincide** —
 the split-read + read-depth corroboration principle of general-purpose SV callers
 (DELLY/LUMPY/Manta), specialized to the small, high-copy, **circular** mitochondrial genome.
-Heteroplasmy (mutant fraction) is estimated **two complementary ways** — from the junction-read
-fraction and from the coverage ratio; because both ultimately read out the same breakpoint depth,
-their agreement is reported as a consistency QC metric rather than a fully independent confirmation.
+Heteroplasmy (mutant fraction) is reported as the **coverage-dosage** fraction (the depth deficit
+across the deletion — the standard measure for large mtDNA deletions), with the **junction-read
+fraction** as corroborating evidence; a deletion is only called PASS when the coverage drop is
+matched by a proportional junction, which is what makes the call robust at any sequencing depth.
 Because the underlying alignment is made against a *circularized* reference (the first 300 bp
 re-appended), deletions spanning the artificial linear origin are represented as split alignments
 and handled natively, without ad-hoc linearization. v1 targets large single deletions; duplications,
@@ -66,23 +67,23 @@ the origin are computed correctly. The thresholds are configurable defaults inte
 against a heteroplasmy dilution series; the coverage-drop gate (not the size/support minima) sets the
 practical lower heteroplasmy limit.
 
-Heteroplasmy is quantified two complementary ways: a junction-fraction estimate
-AFJ = JR/(JR + SR), where the intact spanning-read count SR is a coverage proxy (local breakpoint
-depth − JR), and a coverage-ratio estimate AFC = 1 − (median depth inside / median depth in flanks).
-Because both derive from breakpoint depth they are not statistically independent; their absolute
-difference (AFDIFF) is therefore reported as a *consistency* QC flag (large values indicate
-amplification bias or duplication-as-deletion) rather than an orthogonal validation. False-positive
-control is layered: nuclear-mitochondrial (NUMT) paralog reads are suppressed upstream by competitive
-alignment against a NUMT reference during MitoHPC realignment (inherited from that step; the residual
-NUMT-driven false-call rate is not yet independently quantified within this module); the
-mapping-quality filter, minimum split-read support, minimum size, and the mandatory coverage-drop
-gate (which rejects chimeras and copy-number *gains* lacking a true dosage loss) add further
-specificity; and breakpoints falling in homopolymer runs, the control region (D-loop), known
-NUMT-like sites, the del4977 13 bp direct repeat, or within 20 bp of the artificial origin are
-explicitly flagged (the origin flag also blocks PASS, since deletion-versus-duplication is not
-disambiguated for origin-crossing events in this version). v1 calls deletions only: a tandem
-duplication yields a coverage *gain* and is correctly rejected, and true small origin-crossing
-deletions are not yet resolved.
+Heteroplasmy is reported as the **coverage-dosage** fraction — the standard for large mtDNA
+deletions (eKLIPse, MitoSAlt, Damas et al.): AFC = 1 − trimmed-median(depth inside the deletion) /
+trimmed-median(depth in flanking windows), computed over windows that exclude a transition pad at
+each breakpoint and mask the control region (D-loop), origin, homopolymers, and NUMT-like sites so
+those fragile regions cannot fake a dosage loss. A second, orthogonal estimate — the junction VAF
+AFJ = JR/(JR + SR), where SR is the count of wild-type reads aligned **reference-contiguously across
+the breakpoint** (the true spanning population, not the whole pileup) — both corroborates the event
+and serves as a depth-robust gate: a call PASSes only when the dosage drop is matched by a
+proportional junction (AFJ ≥ a fraction of AFC and above an absolute floor), which rejects coverage
+"bowls" with no real junction at any sequencing depth. False-positive control is layered: NUMT
+paralog reads are suppressed upstream by competitive alignment against a NUMT reference during
+MitoHPC realignment (inherited from that step); the mapping-quality filter, minimum junction
+support, and the junction-vs-dosage consistency gates add specificity; breakpoints in the D-loop,
+NUMT-like sites, or near the origin require strong junction support to PASS; and very large
+deletions with weak junction support are rejected. v1.x reports deletions only: a tandem duplication
+yields a coverage *gain* and is rejected, and true small origin-crossing deletions are flagged out of
+PASS (deletion-versus-duplication is not yet disambiguated there).
 
 Output follows general SV/VCF best practice for interoperability and reproducibility: a
 spec-correct VCFv4.2 per sample with full provenance (tool and `pysam` versions, reference path,
@@ -275,29 +276,52 @@ medFlank  = median dep[ bp5-FLANK+1 .. bp5 ]  ∪  dep[ bp3 .. bp3+FLANK-1 ] (FL
 CVGR      = medInside / medFlank                                          (1 if medFlank = 0)
 ```
 
-### 5.2 Heteroplasmy (two estimates + disagreement)
+### 5.2 Heteroplasmy (coverage-dosage primary + corrected junction VAF)
+The **primary** heteroplasmy is the **coverage-dosage** estimate — the field standard for large
+mtDNA deletions (eKLIPse, MitoSAlt, Damas et al.): the fractional depth loss across the deleted
+span, over **masked, transition-excluded** windows so fragile regions can't fake a drop.
 ```
-span = round( (dep[bp5] + dep[bp3]) / 2 )      # local wild-type read depth at the breakpoints
-SR   = max(span - JR, 0)                        # spanning (intact) reads
-AFJ  = JR / (JR + SR)                            # (1) junction fraction      → primary AF
-AFC  = clamp(1 - CVGR, 0, 1)                     # (2) coverage ratio         → orthogonal estimate
-AFDIFF = |AFJ - AFC|                             # QC: large ⇒ amplification bias or DUP-as-DEL
+AFC = clamp( 1 − trimmedMedian(inside) / trimmedMedian(flank), 0, 1 )   # PRIMARY → reported AF
+  inside = [bp5+TRANS+1 .. bp3−TRANS−1] ;  flank = FLANK bp beyond a TRANS pad at each breakpoint
+  TRANS = HP_SV_TRANS[150] ;  FLANK = HP_SV_FLANK[200] ;  trimmed median drops 15% of each tail
+  positions in the D-loop / origin / homopolymers (HP.bed.gz) / NUMT (NUMT.vcf.gz) are EXCLUDED from
+  both windows; if the interior is too small / over-masked the call falls back to AFJ (junction-only)
+CVGR = trimmedMedian(inside) / trimmedMedian(flank)                     # 1 = no drop
 ```
-`AFJ` is the reported `AF`; `AFC` and `AFDIFF` are reported in `INFO` so every number is auditable
-and the two methods can be cross-checked.
+The **junction VAF** corroborates and is the depth-robust gate input:
+```
+SR  = wild-type reads aligned reference-CONTIGUOUSLY across a breakpoint (true spanning count,
+      min over bp5/bp3) — NOT the v1 `depth − JR`, which used the whole pileup
+AFJ = JR / (JR + SR)                                                    # corrected junction fraction
+AFDIFF = |AFJ − AFC|                                                    # junction-vs-dosage QC
+```
+> **Why this changed (v2).** v1 divided junction reads by the *entire* pileup, so on real high-copy
+> mtDNA (8,000–22,000×) every `AFJ` collapsed below 1% and junction-noise deletions slipped through
+> PASS. v2 reports the dosage `AF` and a *correctly normalised* `AFJ`; the two now agree for real
+> deletions (e.g. del4977 @30%: AFC 0.27 / AFJ 0.25) and diverge for artifacts (AFJ ≈ 0 vs AFC > 0).
+> See the [Changelog](#changelog).
 
 ### 5.3 PASS / FILTER logic
-A call is **PASS** only if **none** of these fire:
+A call is **PASS** only if **none** of these fire. The consistency gates act on the corrected `AFJ`,
+so they are **depth-invariant** (impossible while v1's `AFJ` was collapsed to ~0):
 
 | FILTER reason | Condition |
 |---|---|
-| `lowJR` | `JR < HP_SV_MINJR` (default 3) |
-| `no_cvg_drop` | `CVGR > HP_SV_DROP` (default **0.9** ⇒ requires ≥10% coverage drop) |
-| `WRAP` | a breakpoint within `originpad` (20 bp) of the origin (1 or mtlen) |
-| `lowDP` | `HP_SV_MINDP > 0` and `medFlank < HP_SV_MINDP` (default 0 ⇒ disabled) |
+| `lowJR` | `JR < HP_SV_MINJR` (3) |
+| `no_cvg_drop` | `CVGR > HP_SV_DROP` (0.9 ⇒ requires ≥10% dosage drop) |
+| `WRAP` | a breakpoint within `originpad` (20 bp) of the origin |
+| `lowDP` | `HP_SV_MINDP > 0` and flank depth `< HP_SV_MINDP` (default 0 ⇒ disabled) |
+| `low_dosage` | `AFC < HP_SV_MINAF` (0.03) — the dosage drop itself must clear MINAF |
+| `lowAFJ` | `AFJ < HP_SV_MINAFJ` (0.02) — depth-robust junction-support floor |
+| `unexplained_drop` | `AFJ < HP_SV_AFFRAC × AFC` (0.30) — the coverage drop must be junction-corroborated |
+| `fragile_weakJ` | breakpoint in D-loop/NUMT/origin **and** (`AFJ < HP_SV_STRONGAFJ`[0.05] or `JR < HP_SV_STRONGJR`[10]) |
+| `bigdel_weakJ` | `SVLEN ≥ HP_SV_BIGDEL` (8000) **and** (`JR < HP_SV_BIGMINJR`[8] or `AFJ < HP_SV_BIGMINAFJ`[0.02]) |
 
-The `no_cvg_drop` tier is where genuine **low-heteroplasmy** deletions land (below ~10% the
-coverage dip is within noise) — they are still reported with full junction evidence, just not PASS.
+`unexplained_drop` + `lowAFJ` are the load-bearing artifact filters: a coverage dip with no
+proportional junction (a NUMT / mappability / control-region bowl) is rejected at any depth.
+`fragile_weakJ` lets a *genuine* D-loop deletion with strong junction support PASS while rejecting a
+weak one. Genuine **low-heteroplasmy** deletions (below ~10%) still land in the `no_cvg_drop` tier
+with full evidence, just not PASS.
 
 ### 5.4 False-positive / annotation flags (`INFO`)
 | Flag | Meaning (fires if either breakpoint matches) |
@@ -391,9 +415,22 @@ a cohort; positional/fuzzy merging is a future refinement.)
 | `HP_SV_MINSIZE` | 50 | min deletion size (bp); separates from small indels |
 | `HP_SV_MAXSIZE` | 0 | max deletion size (bp); `0` ⇒ `mtlen-1` |
 | `HP_SV_PAD` | 25 | breakpoint clustering + direct-repeat tolerance (bp) |
-| `HP_SV_DROP` | 0.9 | max `medInside/medFlank` for PASS (≤0.9 ⇒ ≥10% drop) |
-| `HP_SV_FLANK` | 200 | flank window (bp) for the coverage ratio |
+| `HP_SV_DROP` | 0.9 | max masked `CVGR` for PASS (≤0.9 ⇒ ≥10% drop) |
+| `HP_SV_FLANK` | 200 | flank window (bp) for the coverage dosage |
 | `HP_SV_MINDP` | 0 | min flank depth for PASS (0 = disabled) |
+| `HP_SV_TRANS` | 150 | transition pad excluded from the dosage windows (≥ read length) |
+| `HP_SV_MINAF` | 0.03 | min coverage-dosage AF (AFC) for PASS |
+| `HP_SV_MINAFJ` | 0.02 | min corrected junction VAF (AFJ) for PASS (depth-robust support floor) |
+| `HP_SV_AFFRAC` | 0.30 | `AFJ` must be ≥ `AFFRAC × AFC` (coverage drop must be junction-corroborated) |
+| `HP_SV_STRONGAFJ` | 0.05 | junction strength to PASS in a fragile (D-loop/NUMT/origin) region |
+| `HP_SV_STRONGJR` | 10 | junction-read count to PASS in a fragile region |
+| `HP_SV_BIGDEL` | 8000 | "very large" deletion threshold (bp) |
+| `HP_SV_BIGMINJR` | 8 | min `JR` for a very large deletion |
+| `HP_SV_BIGMINAFJ` | 0.02 | min corrected `AFJ` for a very large deletion |
+
+> **v2 calibration caveat.** The dosage/consistency thresholds above are defaults validated on the
+> simulated mocks plus real 1000G high-coverage chrM (healthy → 0 PASS); they are **not** yet locked
+> by a heteroplasmy × depth titration. All are `HP_SV_*` so they recalibrate without code change.
 
 `HP_SV_DROP` is the key sensitivity/specificity knob and is an open tuning question (see
 `SV_CALLING.md` §11); it should be calibrated against a spiked dilution series.
@@ -460,8 +497,10 @@ aggregation, a VCF-spec gate, and a schema check on the committed `example/` out
 | **degenerate inputs** | empty BAM → 0 records; unindexed/wrong-contig/wrong-`mtlen` → clean one-line error, **never a traceback** |
 | **cohort** | `getSVSummary.sh` builds the merge matrix + sites union; recurrence (`NS≥2`) detected |
 | **VCF spec** | `bcftools view` accepts every per-sample VCF (no undefined-contig/INFO warnings) |
+| **real-data specificity** | committed **1000G high-coverage** chrM (healthy: `test/sv/real/*.chrM.bam`) → **0 PASS** — a real-world false-positive guard (real NUMT/D-loop/error structure) the mocks cannot give |
 
-See [`../test/sv/README.md`](../test/sv/README.md) for layout and regeneration.
+22 checks total. See [`../test/sv/README.md`](../test/sv/README.md) and
+[`../test/sv/real/README.md`](../test/sv/real/README.md) for layout and regeneration.
 
 ---
 
@@ -480,9 +519,13 @@ See [`../test/sv/README.md`](../test/sv/README.md) for layout and regeneration.
   span), never PASS. SA coordinates in the chrMC extension are wrapped into `1..mtlen` so VCF
   `POS`/`END` always stay within the contig. The true small origin-crossing deletion is not yet
   resolved (deferred to DEL/DUP disambiguation).
-- **Heteroplasmy is approximate.** `SR` is a coverage proxy (depth at the breakpoints − `JR`), not
-  an exact intact-spanning-pair count; `AFC` is mildly biased near breakpoints by the coverage
-  transition and near the D-loop. Reporting both estimates + `AFDIFF` exposes this.
+- **Heteroplasmy estimators have known biases.** The primary `AFC` (coverage dosage) is biased for
+  **overlapping** deletions (a second event's overlap deepens the dip — see `sv_multidel`, where the
+  junction `AFJ` is the accurate per-deletion estimate) and is unavailable for deletions smaller than
+  ~2×`HP_SV_TRANS` (the interior window vanishes → junction-only `AFJ`). `AFJ`'s denominator `SR`
+  counts SA-representable spanning reads, so very low-heteroplasmy short-arm events can be
+  under-supported. Reporting both `AFC` and `AFJ` (+ `AFDIFF`) exposes these; thresholds are not yet
+  titration-locked (§7 caveat).
 - **Subsampling.** `HP_L` (~2000×) caps the lowest detectable heteroplasmy vs deep dedicated assays.
 - **Deletions only.** No duplications, insertions, inversions, or multiple/complex rearrangements.
 
@@ -518,6 +561,21 @@ SV caller no longer shells out to them.
 
 ## Changelog
 
+- **v2.0 (heteroplasmy + specificity overhaul — real-data driven):** fixes two defects exposed on a
+  real 1384-sample cohort and reproduced on 1000G high-coverage chrM. (1) **Junction VAF was
+  structurally wrong:** `SR = total_pileup_depth − JR` put the whole pileup (thousands ×) in the
+  denominator, so `AFJ ≈ JR/depth ≈ 0` at mitochondrial depth and every reported VAF read <1%. Now
+  `SR = count of wild-type reads aligned reference-contiguously across the breakpoint` (`callsv.py:
+  count_spanning`, primary+supplementary unioned for origin-crossing reads), so `AFJ` tracks
+  heteroplasmy at any depth. (2) **Primary AF is now coverage-dosage** (`AFC`), computed as a
+  trimmed median over D-loop/origin/HP/NUMT-masked, transition-excluded windows (eKLIPse/MitoSAlt/
+  Damas convention) — `FORMAT/AF` carries it. (3) **PASS now enforces junction↔dosage consistency**
+  via depth-robust gates `low_dosage`/`lowAFJ`/`unexplained_drop`/`fragile_weakJ`/`bigdel_weakJ`
+  (5 new `HP_SV_*` knobs + 5 new FILTER ids), rejecting coverage "bowls" with no proportional
+  junction. Validated: real healthy samples 6/10/1→**0 PASS**; mock positives keep PASS with correct
+  VAF (del4977 @30% AFC 0.27/AFJ 0.25; @50%/@95%/D-loop all recovered). New real-data litmus assets
+  + specificity test under `test/sv/real/` (suite now 22 checks). `sv.vcf`/`callSV.sh`/`svReport.py`/
+  docs updated; `callsv.py` only — no frozen file touched; default-off unchanged.
 - **v1.4 (reviewer/grant abstract + provenance):** added §0, a two-level "Methods abstract"
   (Level 1 intuitive + Level 2 grant-ready preliminary-data text) written to be lifted into a
   manuscript/grant, with honest scope and validation framing (in-silico proof-of-concept + an

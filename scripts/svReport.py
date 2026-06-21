@@ -88,8 +88,8 @@ def load_calls(path):
                 "smp": r.get("sample", ""),
                 "bp5": int(r["pos_bp5"]), "end": int(r["end_bp3"]),
                 "len": int(r.get("svlen", 0)),
-                "vaf": float(r.get("af_junction", 0) or 0),
-                "afc": float(r.get("af_coverage", 0) or 0),
+                "vaf": float(r.get("af_coverage", 0) or 0),   # PRIMARY heteroplasmy = coverage-dosage AFC
+                "afj": float(r.get("af_junction", 0) or 0),   # junction-fraction evidence
                 "pass": r.get("filter", "") == "PASS",
                 "filter": r.get("filter", ""),
                 "cls": r.get("delclass", ""),
@@ -171,6 +171,7 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
 .tip{position:absolute;pointer-events:none;background:var(--surf);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;max-width:280px;opacity:0;transition:opacity .08s;z-index:9;box-shadow:0 2px 8px rgba(0,0,0,.12)}
 .tip b{font-weight:500}
 details{margin:8px 0}summary{cursor:pointer;color:var(--accent);font-size:14px}
+.gloss{margin:8px 0 0;font-size:13px}.gloss dt{font-weight:600;color:var(--ink);margin-top:9px}.gloss dd{margin:2px 0 0 0;color:var(--mut);line-height:1.5}
 .muted{color:var(--mut)}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 .vafbar{height:10px;border-radius:5px;background:linear-gradient(90deg,#FDE3AE,#F0997B,#D85A30,#A32D2D)}
@@ -218,6 +219,22 @@ details{margin:8px 0}summary{cursor:pointer;color:var(--accent);font-size:14px}
 
 <details><summary>how these calls are made</summary>
 <p class="muted" style="font-size:14px">Each sample's circular-aware chrM alignment is scanned for <b>split reads</b> (reads whose two halves map across a deletion junction). Junctions are clustered to base-pair breakpoints; a deletion is reported <b>PASS</b> only when the split-read junction is corroborated by a <b>coverage drop</b> between the breakpoints. Heteroplasmy (VAF) is estimated two ways — the junction-read fraction (<span class="mono">AFJ</span>, shown here) and the coverage ratio (<span class="mono">AFC</span>) — and their agreement is a QC signal. The breakpoint microhomology / direct repeat (e.g. the 13&nbsp;bp repeat of the common deletion) is reported as <span class="mono">HOMLEN</span>/<span class="mono">DELCLASS</span>. See <span class="mono">docs/SV_METHODS.md</span>.</p></details>
+<details><summary>glossary &mdash; definitions of terms used in this report</summary>
+<dl class="gloss">
+  <dt>VAF / heteroplasmy</dt><dd>Fraction of mtDNA molecules carrying the deletion (0&ndash;100%). The colour scale and the "VAF" shown here are the <b>coverage-dosage</b> estimate <span class="mono">AFC</span> (below) &mdash; the standard heteroplasmy measure for large mtDNA deletions; the junction estimate <span class="mono">AFJ</span> is reported as corroborating evidence.</dd>
+  <dt>Class&nbsp;I / II / III <span class="muted">(<span class="mono">DELCLASS</span>)</span></dt><dd>Breakpoint-homology class, a clue to the deletion mechanism: <b>Class&nbsp;I</b> = the breakpoints sit in a <b>perfect direct repeat &ge;5&nbsp;bp</b> (e.g. the 13&nbsp;bp repeat of the common deletion &mdash; slipped-strand mispairing); <b>Class&nbsp;II</b> = <b>1&ndash;4&nbsp;bp microhomology</b>; <b>Class&nbsp;III</b> = <b>no breakpoint homology</b> (blunt). Larger homology = the breakpoint can sit anywhere within the repeat, so its position is reported as imprecise.</dd>
+  <dt><span class="mono">HOMLEN</span> / <span class="mono">HOMSEQ</span></dt><dd>Length and sequence of that breakpoint microhomology / direct repeat (drives the Class above).</dd>
+  <dt><span class="mono">AFC</span> &mdash; coverage VAF <span class="muted">(primary)</span></dt><dd>Heteroplasmy from the dosage loss: <span class="mono">AFC = 1 &minus; trimmed-median(depth inside) / trimmed-median(depth in flanks)</span>, computed over D-loop/origin/homopolymer/NUMT-masked, transition-excluded windows. This is the reported VAF.</dd>
+  <dt><span class="mono">AFJ</span> &mdash; junction VAF <span class="muted">(evidence)</span></dt><dd><span class="mono">AFJ = JR / (JR + SR)</span>, where SR counts wild-type reads aligned contiguously across the breakpoint. Used to confirm the deletion and gate calls (the coverage drop must be backed by a proportional junction), not as the primary load.</dd>
+  <dt><span class="mono">AFDIFF</span></dt><dd>|AFJ &minus; AFC| &mdash; how far the two estimates disagree. Large values flag amplification bias or a duplication/artifact masquerading as a deletion (a QC signal).</dd>
+  <dt><span class="mono">JR</span> / <span class="mono">SR</span></dt><dd><b>JR</b> = number of distinct <b>split (junction) reads</b> spanning the deletion breakpoint; <b>SR</b> = <b>wild-type spanning reads</b> (a coverage proxy at the breakpoints).</dd>
+  <dt><span class="mono">CVGR</span></dt><dd>Coverage ratio = median depth inside the deletion / median depth in the flanks. <span class="mono">&le;0.9</span> means a &ge;10% coverage drop (the corroboration gate).</dd>
+  <dt><span class="mono">SVCLAIM</span></dt><dd>Which evidence supports the call: <b>DJ</b> = the split-read junction <i>and</i> the coverage drop agree; <b>J</b> = split-read junction only (no confirming coverage drop).</dd>
+  <dt><b>PASS</b> &amp; filters</dt><dd><b>PASS</b> = a clustered split-read junction corroborated by a coverage drop, meeting the read/depth thresholds. Non-PASS reasons: <span class="mono">lowJR</span> (too few junction reads), <span class="mono">no_cvg_drop</span> (no &ge;10% coverage drop &mdash; where genuine low-heteroplasmy events land), <span class="mono">WRAP</span> (breakpoint at the artificial origin / origin-crossing; deletion-vs-duplication unresolved), <span class="mono">lowDP</span> (flanking depth below threshold).</dd>
+  <dt>tags / flags</dt><dd><span class="mono">COMMON</span> = matches the common deletion del4977; <span class="mono">REPEAT</span> = breakpoint in the del4977 13&nbsp;bp direct repeat; <span class="mono">NUMT</span> / <span class="mono">HP</span> / <span class="mono">DLOOP</span> = breakpoint overlaps a known NUMT-like site / homopolymer run / control region (D-loop); <span class="mono">WRAP</span> = breakpoint near the origin. Flags annotate; they do not by themselves reject a call (except <span class="mono">WRAP</span>).</dd>
+  <dt>common deletion (<span class="mono">del4977</span>)</dt><dd>The canonical ~4977&nbsp;bp "common" mtDNA deletion (m.8470_13447), flanked by a 13&nbsp;bp direct repeat; accumulates with age in post-mitotic tissue.</dd>
+  <dt><span class="mono">HGVS</span></dt><dd>Approximate deletion span in HGVS notation on the rCRS reference (NC_012920.1).</dd>
+</dl></details>
 <p class="sub" id="foot"></p>
 
 <script>
@@ -314,7 +331,7 @@ function linear(cs){
   const c=$('lin');c.innerHTML='';c.appendChild(svg);
   // tooltip
   const tip=$('tip');svg.addEventListener('mousemove',e=>{const t=e.target;if(t.__c){const c=t.__c;
-    tip.innerHTML=`<b>${c.smp}</b><br>m.${c.bp5+1}_${c.end}del · ${c.len.toLocaleString()} bp<br>VAF ${pct(c.vaf)} (cov ${pct(c.afc)}) · class ${c.cls} · ${c.filter}`+(c.genes?'<br><span class="muted">'+c.genes+'</span>':'')+(c.flags?'<br><span class="muted">'+c.flags+'</span>':'');
+    tip.innerHTML=`<b>${c.smp}</b><br>m.${c.bp5+1}_${c.end}del · ${c.len.toLocaleString()} bp<br>VAF ${pct(c.vaf)} (junction ${pct(c.afj)}) · class ${c.cls} · ${c.filter}`+(c.genes?'<br><span class="muted">'+c.genes+'</span>':'')+(c.flags?'<br><span class="muted">'+c.flags+'</span>':'');
     const b=c.getBoundingClientRect?null:null;tip.style.opacity=1;tip.style.left=(e.offsetX+14)+'px';tip.style.top=(e.offsetY-10)+'px'}else tip.style.opacity=0});
   svg.addEventListener('mouseleave',()=>tip.style.opacity=0);
 }
@@ -350,7 +367,7 @@ function render(){const cs=filtered();cards(cs);circle(cs);linear(cs);
   const mlen=Math.max(1,...ALL.map(c=>c.len));hist('szhist',cs.map(c=>c.len),20,v=>rnd(v*mlen/1000,1)+'k',v=>v/mlen);
   recTable(cs);
   $('subtitle').textContent=`${NS} samples · ${ALL.length} deletion calls · generated ${M.generated}`;
-  $('foot').textContent=`Generated by MitoHPC svReport. VAF = junction-read heteroplasmy (AFJ). Frequency track counts deletions (PASS by default) overlapping each base.`}
+  $('foot').textContent=`Generated by MitoHPC svReport. VAF = coverage-dosage heteroplasmy (AFC); AFJ = junction fraction (evidence). Frequency track counts deletions (PASS by default) overlapping each base.`}
 
 // ---- wire controls ----
 function ui(){

@@ -3,7 +3,12 @@
 ##FILTER=<ID=lowJR,Description="Fewer than HP_SV_MINJR junction-supporting reads">
 ##FILTER=<ID=no_cvg_drop,Description="medInside/medFlank above HP_SV_DROP (split-read only, no coverage corroboration)">
 ##FILTER=<ID=WRAP,Description="Breakpoint near the artificial origin / origin-crossing; deletion-vs-duplication unresolved in v1">
-##FILTER=<ID=lowDP,Description="Flanking wild-type depth below threshold">
+##FILTER=<ID=lowDP,Description="Flanking wild-type depth below HP_SV_MINDP">
+##FILTER=<ID=low_dosage,Description="Coverage-dosage heteroplasmy (AFC) below HP_SV_MINAF">
+##FILTER=<ID=lowAFJ,Description="Corrected junction VAF (AFJ) below HP_SV_MINAFJ (depth-robust junction-support floor)">
+##FILTER=<ID=unexplained_drop,Description="Coverage drop not corroborated by a proportional junction: AFJ < HP_SV_AFFRAC*AFC (likely a coverage artifact / NUMT / mappability dip)">
+##FILTER=<ID=fragile_weakJ,Description="Breakpoint in a fragile region (D-loop / NUMT / origin) without strong junction support (AFJ>=HP_SV_STRONGAFJ and JR>=HP_SV_STRONGJR)">
+##FILTER=<ID=bigdel_weakJ,Description="Very large deletion (>=HP_SV_BIGDEL bp) with weak junction support (JR<HP_SV_BIGMINJR or AFJ<HP_SV_BIGMINAFJ)">
 ##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">
 ##INFO=<ID=END,Number=1,Type=Integer,Description="End position: last deleted base (= POS + |SVLEN|)">
 ##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Difference in length between REF and ALT alleles (negative for DEL; VCFv4.2 convention)">
@@ -19,11 +24,11 @@
 ##INFO=<ID=COMMON,Number=0,Type=Flag,Description="Matches the MITOMAP common deletion del4977 (m.8470_13447, within tolerance)">
 ##INFO=<ID=HGVS,Number=1,Type=String,Description="Approximate HGVS deletion span on rCRS/NC_012920.1">
 ##INFO=<ID=JR,Number=1,Type=Integer,Description="Distinct junction-supporting split reads (site-level)">
-##INFO=<ID=SR,Number=1,Type=Integer,Description="Wild-type spanning reads at the breakpoints (coverage proxy; site-level spanning support, NOT the conventional split-read SR)">
-##INFO=<ID=AFJ,Number=1,Type=Float,Description="Junction-fraction heteroplasmy = JR/(JR+SR)">
-##INFO=<ID=AFC,Number=1,Type=Float,Description="Coverage-ratio heteroplasmy = 1 - medInside/medFlank">
-##INFO=<ID=AFDIFF,Number=1,Type=Float,Description="abs(AFJ-AFC) QC: large => amplification bias or DUP-as-DEL">
-##INFO=<ID=CVGR,Number=1,Type=Float,Description="medInside/medFlank coverage ratio">
+##INFO=<ID=SR,Number=1,Type=Integer,Description="Wild-type reads aligned reference-contiguously across a breakpoint (true spanning count; the AFJ denominator), min over the two breakpoints">
+##INFO=<ID=AFJ,Number=1,Type=Float,Description="Junction-fraction EVIDENCE = JR/(JR+SR); depth-robust gate input, NOT the reported heteroplasmy for large deletions">
+##INFO=<ID=AFC,Number=1,Type=Float,Description="Coverage-dosage heteroplasmy (PRIMARY) = 1 - trimmedMedian(inside)/trimmedMedian(flank), with D-loop/origin/HP/NUMT masking and an HP_SV_TRANS transition pad (eKLIPse/MitoSAlt/Damas convention)">
+##INFO=<ID=AFDIFF,Number=1,Type=Float,Description="abs(AFJ-AFC) junction-vs-dosage consistency QC; large => coverage drop not junction-corroborated">
+##INFO=<ID=CVGR,Number=1,Type=Float,Description="masked trimmedMedian(inside)/trimmedMedian(flank) coverage ratio (1 = no drop)">
 ##INFO=<ID=REPEAT,Number=0,Type=Flag,Description="Breakpoint near the del4977 13bp direct repeat (m.8470-8482 / 13447-13459)">
 ##INFO=<ID=NUMT,Number=0,Type=Flag,Description="Breakpoint overlaps a known NUMT-like site (RefSeq/NUMT.vcf.gz)">
 ##INFO=<ID=HP,Number=0,Type=Flag,Description="Breakpoint inside a homopolymer run (RefSeq/HP.bed.gz)">
@@ -32,5 +37,5 @@
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
 ##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Flanking wild-type read depth (round of medFlank)">
 ##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths for the REF (spanning) and ALT (junction) alleles: SR,JR">
-##FORMAT=<ID=AF,Number=A,Type=Float,Description="Heteroplasmy (junction fraction AFJ)">
+##FORMAT=<ID=AF,Number=A,Type=Float,Description="Heteroplasmy = coverage-dosage AF (AFC): 1 - trimmedMedian(inside)/trimmedMedian(flank), D-loop/origin/HP/NUMT masked, HP_SV_TRANS transition pad">
 ##FORMAT=<ID=SR,Number=1,Type=Integer,Description="Split (junction) reads supporting the deletion (= JR; Manta-style per-sample split-read support)">

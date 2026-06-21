@@ -143,10 +143,16 @@ def check_sample(name, events, outdir):
             details.append("del@%d/%d not detected" % (bp5, bp3))
             continue
         sub = []
+        # heteroplasmy: the caller reports a coverage-dosage AF (af_coverage, PRIMARY) and a
+        # corrected junction VAF (af_junction). For an isolated deletion the dosage tracks truth;
+        # for OVERLAPPING deletions (sv_multidel) the dosage is confounded by the other event's
+        # overlap, but the junction estimate stays specific. Accept if EITHER is within tolerance.
+        afc = fnum(m["af_coverage"])
         afj = fnum(m["af_junction"])
-        if afj is None or abs(afj - het) > AF_TOL:
+        errs = [abs(a - het) for a in (afc, afj) if a is not None]
+        if not errs or min(errs) > AF_TOL:
             all_ok = False
-            sub.append("AFJ=%s vs het=%.2f" % (m["af_junction"], het))
+            sub.append("AFC=%s/AFJ=%s vs het=%.2f" % (m["af_coverage"], m["af_junction"], het))
         if het >= HI_HET and m["filter"] != "PASS":
             all_ok = False
             sub.append("want PASS got %s" % m["filter"])
@@ -297,6 +303,26 @@ def check_vcf_spec(outdir):
     record("bcftools_spec", ok_all, "all per-sample VCFs valid")
 
 
+def check_real(outdir):
+    """Real-data specificity: healthy 1000G high-coverage chrM samples (real/*.chrM.bam) carry no
+    large mtDNA deletion, so the caller must yield ZERO PASS calls. A false-positive guard the
+    simulated mocks cannot give (real NUMT/D-loop/error structure). Optional: skipped if absent."""
+    realdir = os.path.join(HERE, "real")
+    if not os.path.isdir(realdir):
+        return
+    bams = sorted(f for f in os.listdir(realdir) if f.endswith(".chrM.bam"))
+    if not bams:
+        return
+    print("[real-data specificity — healthy 1000G chrM must give 0 PASS]")
+    for fn in bams:
+        s = fn[:-len(".chrM.bam")]
+        rc, _ = run_caller(s, os.path.join(realdir, fn), os.path.join(outdir, "real_" + s))
+        rows = read_tab(os.path.join(outdir, "real_" + s + ".sv.tab"))
+        npass = sum(1 for r in rows if r.get("filter") == "PASS")
+        record("real_%s" % s, rc == 0 and npass == 0,
+               "healthy real chrM: %d PASS (want 0), %d total calls" % (npass, len(rows)))
+
+
 # --------------------------------------------------------------------------- #
 def main():
     samples = load_truth()
@@ -309,6 +335,7 @@ def main():
         check_examples(outdir)
         check_degenerate(outdir)
         check_vcf_spec(outdir)
+        check_real(outdir)
     finally:
         shutil.rmtree(outdir, ignore_errors=True)
 

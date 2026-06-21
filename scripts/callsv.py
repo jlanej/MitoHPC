@@ -281,6 +281,63 @@ def per_base_depth(bam, chrom, mtlen):
     return dep
 
 
+def trimmed_median(vals, trim=0.15):
+    """Median after dropping `trim` of each tail — robust to NUMT/homopolymer depth spikes."""
+    if not vals:
+        return 0
+    s = sorted(vals)
+    k = int(trim * len(s))
+    s2 = s[k:len(s) - k]
+    return median(s2 if s2 else s)
+
+
+def masked_depths(dep, a, b, m, masked):
+    """Per-base depths over the circular range [a..b] (1-based inclusive), skipping positions for
+    which masked(p) is True (D-loop / origin / homopolymer / NUMT) — the fragile regions that
+    produce coverage 'bowls' with no real junction (e.g. the control-region dip behind the
+    bp314-955 false positive)."""
+    out = []
+    if b < a:
+        return out
+    for p in range(a, b + 1):
+        q = wrap1(p, m)
+        if not masked(q):
+            out.append(dep[q])
+    return out
+
+
+def count_spanning(bam, chrom, bp5, bp3, m, minmapq):
+    """Distinct read templates aligned reference-CONTIGUOUSLY across a breakpoint boundary — i.e.
+    wild-type molecules that do NOT carry the deletion. This is the correct denominator for the
+    junction VAF, replacing the old `SR = total_pileup_depth - JR` (which collapsed AFJ to ~0 at
+    mitochondrial depth: at 16000x, JR/(depth) ~ 0 even for a real 30% deletion).
+
+    A template spans the bp5 boundary if some aligned block covers both bp5 and bp5+1 (so the read
+    is continuously matched across the start of the deleted span); the bp3 boundary uses bp3-1/bp3.
+    Reads soft-clipped or SA-split AT the boundary (i.e. carrying this deletion) have a block that
+    ENDS at the boundary and are correctly excluded. Primary + supplementary blocks of the same
+    template are unioned (by query_name) so an origin-crossing wild-type read, which circSam.pl
+    splits into two arcs, still contributes. SR = min over the two breakpoints (conservative)."""
+    foot = {}
+    with pysam.AlignmentFile(bam, "rb") as af:
+        for r in af.fetch(chrom):
+            if r.is_unmapped or r.is_secondary:        # keep supplementary (origin-crossing arcs)
+                continue
+            if r.mapping_quality < minmapq:
+                continue
+            foot.setdefault(r.query_name, []).extend(r.get_blocks())   # 0-based [s,e) ref blocks
+
+    def spans(boundary):    # templates contiguously aligned across boundary/(boundary+1) (1-based)
+        n = 0
+        for blocks in foot.values():
+            for (s, e) in blocks:        # 0-based half-open => covers 1-based [s+1 .. e]
+                if s + 1 <= boundary and boundary + 1 <= e:
+                    n += 1
+                    break
+        return n
+    return min(spans(bp5), spans(bp3 - 1))
+
+
 # --------------------------------------------------------------------------- #
 # Stage B: coverage corroboration, heteroplasmy, flags (replaces svCall.pl)
 # --------------------------------------------------------------------------- #
@@ -293,16 +350,6 @@ TAB_COLUMNS = ["sample", "chrom", "pos_bp5", "end_bp3", "svlen", "svclaim", "jr"
 def call(args):
     maxsize = args.maxsize if args.maxsize else args.mtlen - 1
     m = args.mtlen
-
-    def med_range(dep, a, b):
-        if b < a:
-            return 0
-        return median([dep[wrap1(p, m)] for p in range(a, b + 1)])
-
-    def med_flank(dep, bp5, bp3, flank):
-        vals = [dep[wrap1(p, m)] for p in range(bp5 - flank + 1, bp5 + 1)]
-        vals += [dep[wrap1(p, m)] for p in range(bp3, bp3 + flank)]
-        return median(vals)
 
     fa = pysam.FastaFile(args.ref)
     seq = fa.fetch(args.chrom)
@@ -318,24 +365,43 @@ def call(args):
     genes = load_genes(args.genes, args.chrom)
     rep = (args.rep5a, args.rep5b, args.rep3a, args.rep3b)
 
+    def masked(p):   # fragile positions excluded from the dosage windows (control region, origin,
+        return (in_iv(dloop, p) or in_iv(hp, p) or (p in numt)   # homopolymers, NUMT-like sites)
+                or p <= args.originpad or p >= m - args.originpad)
+
+    PADt = args.trans     # transition pad: exclude the breakpoint smear from the dosage windows
+    MINBASE = 50          # min usable bases per window for a trustworthy dosage estimate
+
     vcf_records = []
     tab_rows = []
     for (bp5, bp3, svlen, jr, strand) in junctions:
-        med_in = med_range(dep, bp5 + 1, bp3 - 1)
-        med_fl = med_flank(dep, bp5, bp3, args.flank)
-        ratio = med_in / med_fl if med_fl > 0 else 1.0
-        span = rnd((dep[wrap1(bp5, m)] + dep[wrap1(bp3, m)]) / 2.0)
-        sr = max(span - jr, 0)
-        afj = jr / (jr + sr) if (jr + sr) > 0 else 0.0
-        afc = max(0.0, min(1.0, 1.0 - ratio))
-        afdiff = abs(afj - afc)
         end = bp3 - 1
+
+        # --- (1) junction VAF with the CORRECTED denominator: true wild-type spanning reads,
+        #         not the whole pileup. AFJ now tracks heteroplasmy at any depth. ---------------
+        sr = count_spanning(args.bam, args.chrom, bp5, bp3, m, args.minmapq)
+        afj = jr / (jr + sr) if (jr + sr) > 0 else 0.0
+
+        # --- (2) coverage-dosage VAF = PRIMARY heteroplasmy: 1 - trimmed_median(inside)/flank
+        #         over masked, transition-excluded windows (eKLIPse/MitoSAlt/Damas convention) ---
+        insidev = masked_depths(dep, bp5 + PADt + 1, bp3 - PADt - 1, m, masked)
+        flankv = (masked_depths(dep, bp5 - PADt - args.flank + 1, bp5 - PADt, m, masked)
+                  + masked_depths(dep, bp3 + PADt, bp3 + PADt + args.flank - 1, m, masked))
+        d_fl = trimmed_median(flankv)
+        if len(insidev) >= MINBASE and len(flankv) >= MINBASE and d_fl > 0:
+            ratio = trimmed_median(insidev) / d_fl                  # masked coverage ratio
+            afc = max(0.0, min(1.0, 1.0 - ratio))                  # dosage heteroplasmy (primary)
+            dose = True
+        else:                       # interior too small / over-masked -> dosage not estimable
+            ratio, afc, dose = 1.0, afj, False                     # fall back to junction-only
+        afdiff = abs(afj - afc)
+        med_fl = rnd(d_fl)
 
         # breakpoint microhomology / direct repeat -> precision + class
         homlen, homseq = microhomology(seq, bp5, bp3, m)
         delclass = "I" if homlen >= 5 else ("II" if homlen >= 1 else "III")
         gene_list = genes_in_deletion(genes, bp5 + 1, end)
-        svclaim = "DJ" if ratio <= args.drop else "J"   # both signals agree vs split-read-only
+        svclaim = "DJ" if (dose and ratio <= args.drop) else "J"    # depth+junction vs junction-only
         common = (near(bp5, COMMON_BP5[0], COMMON_BP5[1], args.pad)
                   and near(bp3, COMMON_BP3[0], COMMON_BP3[1], args.pad)
                   and COMMON_SVLEN[0] <= svlen <= COMMON_SVLEN[1])
@@ -349,23 +415,38 @@ def call(args):
                  or bp3 <= args.originpad or bp3 >= m - args.originpad)
         if wrapf:
             flags.append("WRAP")
-        if in_iv(hp, bp5) or in_iv(hp, bp3):
+        in_hp = in_iv(hp, bp5) or in_iv(hp, bp3)
+        if in_hp:
             flags.append("HP")
-        if in_iv(dloop, bp5) or in_iv(dloop, bp3):
+        in_dloop = in_iv(dloop, bp5) or in_iv(dloop, bp3)
+        if in_dloop:
             flags.append("DLOOP")
-        if (bp5 in numt) or (bp3 in numt):
+        in_numt = (bp5 in numt) or (bp3 in numt)
+        if in_numt:
             flags.append("NUMT")
 
-        # FILTER
+        # --- (3) PASS / FILTER: a dosage drop, corroborated by a PROPORTIONAL junction, in a
+        #     non-fragile context. The consistency gates act on the corrected AFJ, so they are
+        #     depth-invariant (impossible while AFJ was collapsed to ~0). --------------------- #
         fil = []
         if jr < args.minjr:
-            fil.append("lowJR")
+            fil.append("lowJR")                                    # too few junction reads
         if ratio > args.drop:
-            fil.append("no_cvg_drop")
+            fil.append("no_cvg_drop")                              # < ~10% dosage loss
         if wrapf:
-            fil.append("WRAP")
-        if args.mindepth and med_fl < args.mindepth:
-            fil.append("lowDP")
+            fil.append("WRAP")                                     # origin: DEL vs DUP unresolved
+        if args.mindepth and d_fl < args.mindepth:
+            fil.append("lowDP")                                    # flank depth too low to trust
+        if afc < args.minaf:
+            fil.append("low_dosage")                               # dosage drop below MINAF
+        if afj < args.minafj:
+            fil.append("lowAFJ")                                   # junction fraction floor
+        if afj < args.affrac * afc:
+            fil.append("unexplained_drop")                         # drop not junction-corroborated
+        if (in_dloop or in_numt or wrapf) and (afj < args.strongafj or jr < args.strongjr):
+            fil.append("fragile_weakJ")                            # fragile region needs strong junction
+        if svlen >= args.bigdel and (jr < args.bigminjr or afj < args.bigminafj):
+            fil.append("bigdel_weakJ")                             # huge deletion needs strong junction
         flt = ";".join(fil) if fil else "PASS"
 
         refbase = seq[bp5 - 1].upper() if 1 <= bp5 <= len(seq) else "N"
@@ -389,13 +470,14 @@ def call(args):
                  "AFDIFF=%.3f" % afdiff, "CVGR=%.3f" % ratio]
         info += flags
 
-        fmt_val = "0/1:%d:%d,%d:%.3f:%d" % (rnd(med_fl), sr, jr, afj, jr)
+        # FORMAT AF carries the PRIMARY (coverage-dosage) heteroplasmy AFC, not AFJ; AD = SR,JR.
+        fmt_val = "0/1:%d:%d,%d:%.3f:%d" % (med_fl, sr, jr, afc, jr)
         vcf_records.append((bp5, "%s\t%d\t.\t%s\t<DEL>\t.\t%s\t%s\tGT:DP:AD:AF:SR\t%s"
                             % (args.chrom, bp5, refbase, flt, ";".join(info), fmt_val)))
 
         tab_rows.append("\t".join(str(x) for x in [
             args.sample, args.chrom, bp5, end, svlen, svclaim, jr, sr,
-            "%.3f" % afj, "%.3f" % afc, "%.3f" % afdiff, "%.3f" % ratio, rnd(med_fl),
+            "%.3f" % afj, "%.3f" % afc, "%.3f" % afdiff, "%.3f" % ratio, med_fl,
             homlen, homseq, delclass, 1 if common else 0, len(gene_list),
             ",".join(gene_list) if gene_list else ".", hgvs,
             flt, ",".join(flags) if flags else "."]))
@@ -425,8 +507,13 @@ def write_vcf(args, records, seq):
     # name each provenance line by its real HP_SV_* env var (the argparse key 'mindepth' is exposed
     # as HP_SV_MINDP in init.sh/callSV.sh, so don't emit the literal-uppercased 'MINDEPTH')
     param_env = {"minmapq": "MINMAPQ", "minjr": "MINJR", "minsize": "MINSIZE", "maxsize": "MAXSIZE",
-                 "pad": "PAD", "drop": "DROP", "flank": "FLANK", "mindepth": "MINDP"}
-    for k in ("minmapq", "minjr", "minsize", "maxsize", "pad", "drop", "flank", "mindepth"):
+                 "pad": "PAD", "drop": "DROP", "flank": "FLANK", "mindepth": "MINDP",
+                 "trans": "TRANS", "minaf": "MINAF", "minafj": "MINAFJ", "affrac": "AFFRAC",
+                 "strongafj": "STRONGAFJ", "strongjr": "STRONGJR", "bigdel": "BIGDEL",
+                 "bigminjr": "BIGMINJR", "bigminafj": "BIGMINAFJ"}
+    for k in ("minmapq", "minjr", "minsize", "maxsize", "pad", "drop", "flank", "mindepth",
+              "trans", "minaf", "minafj", "affrac", "strongafj", "strongjr", "bigdel",
+              "bigminjr", "bigminafj"):
         out.write("##callsv_param_HP_SV_%s=%s\n" % (param_env[k], getattr(args, k)))
     with open(args.header) as h:                  # static ##ALT/##FILTER/##INFO/##FORMAT
         for line in h:
@@ -459,6 +546,16 @@ def main():
     p.add_argument("--drop", type=float, default=0.9)
     p.add_argument("--flank", type=int, default=200)
     p.add_argument("--mindepth", type=int, default=0)
+    # heteroplasmy + consistency-gate tunables (v2; exposed as HP_SV_* via callSV.sh)
+    p.add_argument("--trans", type=int, default=150, help="transition pad excluded from dosage windows")
+    p.add_argument("--minaf", type=float, default=0.03, help="min coverage-dosage AF for PASS")
+    p.add_argument("--minafj", type=float, default=0.02, help="min corrected junction VAF for PASS")
+    p.add_argument("--affrac", type=float, default=0.30, help="AFJ must be >= affrac*AFC (drop junction-corroborated)")
+    p.add_argument("--strongafj", type=float, default=0.05, help="junction strength to PASS in a fragile region")
+    p.add_argument("--strongjr", type=int, default=10, help="junction-read count to PASS in a fragile region")
+    p.add_argument("--bigdel", type=int, default=8000, help="'very large' deletion threshold (bp)")
+    p.add_argument("--bigminjr", type=int, default=8, help="min JR for a very large deletion")
+    p.add_argument("--bigminafj", type=float, default=0.02, help="min corrected AFJ for a very large deletion")
     p.add_argument("--hp")
     p.add_argument("--numt")
     p.add_argument("--dloop")
