@@ -30,7 +30,7 @@
 ##callsv_param_HP_SV_SRMINCONS=0.7
 ##callsv_param_HP_SV_SRMINSB=0.1
 ##ALT=<ID=DEL,Description="Deletion">
-##FILTER=<ID=PASS,Description="Split-read junction corroborated by a coverage drop">
+##FILTER=<ID=PASS,Description="Deletion passed: a split-read junction corroborated by a coverage drop (SVCLAIM=DJ) OR high-confidence split reads alone (SVCLAIM=J); see SVCLAIM">
 ##FILTER=<ID=lowJR,Description="Fewer than HP_SV_MINJR junction-supporting reads">
 ##FILTER=<ID=no_cvg_drop,Description="medInside/medFlank above HP_SV_DROP (split-read only, no coverage corroboration)">
 ##FILTER=<ID=WRAP,Description="Breakpoint near the artificial origin / origin-crossing; deletion-vs-duplication unresolved in v1">

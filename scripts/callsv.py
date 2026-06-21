@@ -185,7 +185,7 @@ def fasta_md5(seq):
 # Stage A: split-read deletion junctions (replaces sa2del.pl)
 # --------------------------------------------------------------------------- #
 def extract_junctions(bam, chrom, minmapq, minsize, maxsize, pad, minsupport, mtlen, minclip=0, srtol=5):
-    """Return clustered junctions: list of (bp5, bp3, svlen, JR, strand).
+    """Return clustered junctions: list of (bp5, bp3, svlen, JR, strand, srcons, srsb).
 
     SA-tag coordinates may live in the circularized chrMC extension (>mtlen, since circSam.pl
     does not rewrite SA tags), so they are wrapped into 1..mtlen; clusters whose final

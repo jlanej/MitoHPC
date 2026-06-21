@@ -28,13 +28,14 @@ reference in two pieces, the second recorded as a supplementary-alignment (`SA:Z
 two breakpoints (bp5 → bp3) to base-pair resolution; and (ii) a *coverage drop* — only wild-type
 molecules cover the deleted span, so read depth falls across it in proportion to the mutant
 fraction. We extract split-read junctions, cluster the reads that support the same breakpoint pair,
-and call a deletion **only when a clustered junction and a corroborating coverage drop coincide** —
-the split-read + read-depth corroboration principle of general-purpose SV callers
-(DELLY/LUMPY/Manta), specialized to the small, high-copy, **circular** mitochondrial genome.
+and call a deletion **PASS by either path**: a clustered junction corroborated by a coverage drop, *or*
+strong, clean split-read evidence alone (since mtDNA read depth is finicky) — the split-read +
+read-depth corroboration principle of general-purpose SV callers (DELLY/LUMPY/Manta), specialized to
+the small, high-copy, **circular** mitochondrial genome (see §0.5 for the precedent map).
 Heteroplasmy (mutant fraction) is reported as the **coverage-dosage** fraction (the depth deficit
 across the deletion — the standard measure for large mtDNA deletions), with the **junction-read
-fraction** as corroborating evidence; a deletion is only called PASS when the coverage drop is
-matched by a proportional junction, which is what makes the call robust at any sequencing depth.
+fraction** as corroborating evidence; the dual-path PASS is what makes a call robust at any
+sequencing depth.
 Because the underlying alignment is made against a *circularized* reference (the first 300 bp
 re-appended), deletions spanning the artificial linear origin are represented as split alignments
 and handled natively, without ad-hoc linearization. v1 targets large single deletions; duplications,
@@ -71,7 +72,7 @@ Heteroplasmy is reported as the **coverage-dosage** fraction — the standard fo
 deletions (eKLIPse, MitoSAlt, Damas et al.): AFC = 1 − trimmed-median(depth inside the deletion) /
 trimmed-median(depth in flanking windows), computed over windows that exclude a transition pad at
 each breakpoint and mask the control region (D-loop), origin, homopolymers, and NUMT-like sites so
-those fragile regions cannot fake a dosage loss. A second, orthogonal estimate — the junction VAF
+those fragile regions cannot fake a dosage loss. A second, complementary estimate — the junction VAF
 AFJ = JR/(JR + SR), where SR is the count of wild-type reads aligned **reference-contiguously across
 the breakpoint** (the true spanning population, not the whole pileup) — both corroborates the event
 and serves as a depth-robust gate: a call PASSes only when the dosage drop is matched by a
@@ -104,12 +105,14 @@ and haplogroup deliverables are byte-for-byte unchanged.
 The implementation has been validated **in silico** as a proof-of-concept under idealized
 conditions: paired-end reads are generated from defined mixtures of wild-type and deletion-bearing
 circular genomes and aligned through the pipeline's own circular path, so the inside-vs-flank
-coverage ratio equals the spiked heteroplasmy by construction. A committed regression suite (20
+coverage ratio equals the spiked heteroplasmy by construction. A committed regression suite (24
 checks) confirms recovery of spiked deletions — including the common deletion at 30% and 5%
 heteroplasmy, multiple simultaneous deletions, near-homoplasmy (95%), a control-region deletion, and
 a low-coverage (40×) case — and the expected negatives: wild-type samples, tandem duplications
 (coverage gain), and origin-crossing artifacts all yield zero PASS calls, degenerate inputs fail
-cleanly without tracebacks, and every emitted VCF passes a `bcftools` specification gate. This
+cleanly without tracebacks, and every emitted VCF passes a `bcftools` specification gate. It also
+includes real-data vetting: three healthy 1000G high-coverage chrM samples (0 PASS, specificity) and
+a del4977 spiked into a real wild-type background (recovered PASS + COMMON, positive control). This
 establishes algorithmic correctness, not real-world performance; quantitative benchmarking on real
 data is the planned next step — a heteroplasmy × depth titration to establish sensitivity and the
 limit of detection (LoD), an empirical per-genome false-positive rate (including NUMT-stress samples),
@@ -122,6 +125,39 @@ concordance against an established mtDNA deletion caller (e.g. eKLIPse, MitoSAlt
 > Andrews et al., *Nat Genet* 1999; split-read + read-depth SV precedent — DELLY (Rausch 2012),
 > LUMPY (Layer 2014), Manta (Chen 2016); mtDNA-specific deletion callers for the comparison —
 > eKLIPse (Goudenège 2019), MitoSAlt (Basu 2020). (Verify each before submission.)
+
+---
+
+## 0.5 Relationship to established methods
+
+This caller is a deliberate recombination of two mature lineages — **mtDNA-specific deletion
+callers** (eKLIPse, MitoSAlt, Damas et al. / MitoBreak) and **general short-read SV callers**
+(DELLY, LUMPY, Manta, GRIDSS) — specialized to MitoHPC's small, high-copy, *circular* chrM
+alignment. Nothing here is novel in isolation; the contribution is the fit and a handful of
+mtDNA-specific corrections. Verify every citation before placing this in a manuscript.
+
+| Design choice (this caller) | Closest precedent | What we take | Where we deviate / why |
+|---|---|---|---|
+| Breakpoints from `SA:Z` split reads + soft-clip harvesting (§4.1, §4.4) | eKLIPse (soft-clipping), MitoSAlt (split/gapped-read realignment); LUMPY/Manta split-read (`SR`) | Split/clipped reads pin breakpoints to base-pair resolution | We read the aligner's `SA` tags off the realigned `$O.bam` and *harvest* short clips only to **reinforce** an existing SA junction, never to seed one. No local re-alignment of clipped reads (eKLIPse) and no assembly (Manta/GRIDSS). |
+| **Primary** heteroplasmy = masked, trimmed coverage-dosage `AFC` (§5.2) | Damas et al. 2014 / MitoBreak; eKLIPse & MitoSAlt also report a dosage fraction | `1 − inside/flank` depth ratio as the field-standard large-deletion heteroplasmy | We mask D-loop/origin/homopolymer/NUMT and exclude a transition pad so fragile regions can't fake a drop. eKLIPse (soft-clip-derived) is reported to **underestimate** heteroplasmy; our masked/trimmed `AFC` tracks the spiked fraction in-silico (del4977 @30% → 0.27) — real-data concordance is future work (§0). |
+| Corrected junction VAF `AFJ = JR/(JR+SR)`, `SR` = true reference-contiguous spanning templates (§5.2) | General-caller VAF intuition (junction reads / molecules at the locus) | Junction-read fraction as a depth-robust second estimate | The fix vs a naive `JR/depth`: at mtDNA depth (8–22k×) `JR/depth ≈ 0` even for a real 30% deletion. We count only wild-type reads aligned **contiguously across the breakpoint** (`count_spanning_boundaries`), so `AFJ` tracks heteroplasmy at any depth. |
+| Evidence-type separation: `SVCLAIM=J`/`DJ` PASS paths + the `JSUP`/`SRCONS`/`SRSB` lens (§4.5, §5.3) | LUMPY (exposes `SU`/`PE`/`SR`), Manta (`SR` vs `PR`); general-caller per-call quality scoring | Keep split-read support as its own, depth-independent dimension and surface it | We record *which* evidence drove a call and a depth-independent junction-quality lens. Because a direct repeat slides the breakpoint but conserves deletion size, `SRCONS` is measured on **svlen**, not position (microhomology-invariant) — an mtDNA-specific twist. We have **no** paired-end / discordant (`PE`/`PR`) channel. |
+| Circular handling + del/dup ambiguity (§8, §5.4) | MitoSAlt (on a *circular* genome every split read is a deletion **or** a duplication; Basu 2020) | Treat chrM as circular; origin-spanning junctions are first-class | We **inherit** circularity from MitoHPC's `chrMC` realignment (first 300 bp re-appended) rather than re-linearizing. We do **not** yet resolve the del-vs-dup ambiguity MitoSAlt flags: origin junctions are `WRAP`-flagged out of PASS, and a duplication's coverage *gain* is rejected, not called. |
+| NUMT (nuclear-mtDNA paralog) control (§5.4) | Standard mtDNA-pipeline concern; general callers rely on MAPQ/mappability | Suppress paralog reads before calling | Load-bearing defense is **upstream**: `$O.bam` was built by competitive alignment against a NUMT reference during MitoHPC realignment. In the caller, MAPQ≥20, a `NUMT` flag, and the junction↔dosage consistency gate are secondary guards. |
+| Scope: single large-scale **deletions** only (§11) | eKLIPse / MitoSAlt target the same clinical class (Kearns-Sayre / CPEO / Pearson; del4977) | The clinically dominant mtDNA SV class | Narrower than MitoSAlt (also calls duplications) and the general callers (inversions/insertions/complex). |
+
+**What we deliberately do *not* do** (honest scope, not oversight):
+- **No local/breakend assembly** — unlike Manta (assembly of `SR`/`PR`) or GRIDSS (breakend assembly, ~90% precision). Breakpoints are read off the aligner's split/clip records directly.
+- **No paired-end / discordant-pair signal** — unlike DELLY/LUMPY (`PE`), Manta (`PR`). Split-read + read-depth only; on small high-copy mtDNA that pair is sufficient and simpler.
+- **No duplication / inversion / insertion / complex calling** — unlike MitoSAlt (duplications) and general callers. Opposite-strand `SA` (inversion signature) and coverage *gains* (tandem-dup signature) are recognized and **rejected** so they can't masquerade as deletions, but are not reported as their own events.
+- **No probabilistic multi-evidence model / breakpoint likelihood** — unlike LUMPY's probabilistic integration or GRIDSS's quality model; PASS is a transparent set of thresholded gates (§5.3), chosen for auditability over a single opaque score.
+
+**Net positioning.** Closest in spirit to **MitoSAlt** (split-read-driven, heteroplasmy that tracks
+truth, circular-aware) but deletion-only and assembly-free; takes **dosage-as-primary-heteroplasmy**
+from **Damas/MitoBreak** with explicit fragile-region masking; takes **split-read-support-as-its-own-
+dimension** (`SVCLAIM`, `JSUP`) from **LUMPY/Manta**; and corrects the naive junction-VAF denominator
+that breaks at mitochondrial depth. Head-to-head concordance against eKLIPse / MitoSAlt on real data
+is named as required future work (§0) and is not yet done.
 
 ---
 
@@ -149,13 +185,17 @@ The caller finds **both** signals and requires them to agree:
 2. The **coverage drop** between `bp5` and `bp3` confirms a real dosage loss (and is what a
    nuclear-segment/chimera artifact will *not* produce).
 
-Heteroplasmy (the mutant fraction) is estimated **two independent ways** — from the junction-read
-fraction and from the coverage ratio — and their disagreement is reported as a QC flag. A
-deletion is **PASS** only when a clustered split junction *and* a coverage drop coincide.
+Heteroplasmy (the mutant fraction) is estimated **two complementary ways** — from the junction-read
+fraction and from the coverage ratio (they share the breakpoint depth, so their disagreement is a QC
+flag, not an independent confirmation). A deletion is **PASS** by **either** path: a clustered split
+junction corroborated by a coverage drop (`DJ`), *or* strong, clean split-read evidence alone (`J` —
+because mtDNA read depth is finicky); see §5.3.
 
-This is the standard split-read + read-depth corroboration principle (cf. DELLY/LUMPY), specialized
-to the small circular mitochondrial genome and implemented in **Python 3 with `pysam`** (the
-de-facto htslib binding — the same C library behind `samtools`), so the BAM is parsed in-process
+This is the split-read + read-depth corroboration principle of general SV callers (read-depth is
+integrated explicitly by LUMPY; DELLY/Manta establish the split-read breakpoint precedent), with the
+coverage-dosage heteroplasmy of the mtDNA-specific callers (eKLIPse/MitoSAlt/Damas) — see §0.5 —
+specialized to the small circular mitochondrial genome and implemented in **Python 3 with `pysam`**
+(the de-facto htslib binding — the same C library behind `samtools`), so the BAM is parsed in-process
 with no Perl and no subprocess shelling.
 
 ---
@@ -198,10 +238,11 @@ callSV.sh ──▶ $HP_PYTHON(=python3) scripts/callsv.py --bam $O.bam --ref ch
                                                       --header scripts/sv.vcf --sample $S
                                                       --out $O.sv.vcf --tab $O.sv.tab [knobs/masks]
                          │
-   ┌─────────────────────┴───────────────── all in one pysam pass ───────────────────────┐
-   │ extract_junctions(): iterate $O.bam (MAPQ≥20), SA:Z split reads → clustered junctions │
-   │ per_base_depth():    pysam count_coverage(quality_threshold=0) ≡ `samtools depth -a`  │
-   │ call():              corroborate + heteroplasmy + flags → $O.sv.vcf + $O.sv.tab       │
+   ┌──────────────────────┴──────── in-process (pysam); no temp files, no subprocess ──────────────┐
+   │ extract_junctions():          $O.bam SA:Z split reads → clusters (+ soft-clip harvest rescan)  │
+   │ per_base_depth():             pysam count_coverage(quality_threshold=0) ≡ `samtools depth -a`  │
+   │ count_spanning_boundaries():  one pass → wild-type spanning reads per breakpoint (the AFJ den.) │
+   │ call():                       corroborate + heteroplasmy + lens + flags → $O.sv.vcf + $O.sv.tab │
    └──────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -215,7 +256,7 @@ parity-tested against the original Perl implementation (field-for-field identica
 ## 4. Stage A — split-read junctions (`callsv.py: extract_junctions`)
 
 Iterates `$O.bam` via `pysam.AlignmentFile.fetch(chrom)` and returns clustered junctions
-`(bp5, bp3, SVLEN, JR, strand)`.
+`(bp5, bp3, SVLEN, JR, strand, SRCONS, SRSB)` (the last two feed the evidence lens, §4.5).
 
 ### 4.1 Which reads are used
 For each alignment record, keep it only if it is a **primary** alignment carrying an `SA:Z:` tag:
@@ -252,7 +293,9 @@ SVLEN = bp3 - bp5 - 1                               (number of deleted bases)
 ```
 
 Junctions with `SVLEN < HP_SV_MINSIZE` (default **50**) or `> mtlen-1` are discarded (small indels
-are the SNV caller's territory; the upper bound excludes the whole-genome/origin artifact).
+are the SNV caller's territory; the upper bound excludes the whole-genome/origin artifact). The
+**deleted bases are `bp5+1 .. bp3-1`** (`POS=bp5` is the last *retained* base, per the VCF `DEL`
+convention; `END=bp3-1`); `GENE`/`NGENE` and `HGVS` are computed over that span.
 
 > **Direct-repeat microhomology.** When a deletion is flanked by a direct repeat (e.g. the 13 bp
 > repeat of the common deletion), the aligner places the breakpoint *anywhere within the repeat*,
@@ -281,9 +324,9 @@ Clusters with `JR < 2` are dropped here (`-minsupport 2`); the PASS threshold `H
 
 ### 4.4 Soft-clip harvesting (reinforce-only)
 SA-only `JR` undercounts the junction (§4.1). After the SA clusters are fixed, a second pass adds
-**soft-clipped reads back onto an existing SA-supported breakpoint**: a read with a trailing soft-clip
-(≥ `HP_SV_MINCLIP`, default **10** bp) ending within `HP_SV_PAD` of `bp5`, or a leading soft-clip
-starting within `HP_SV_PAD` of `bp3`, is a read crossing that junction; its template is added to the
+**clipped reads (CIGAR `S` soft- or `H` hard-clip) back onto an existing SA-supported breakpoint**: a
+read with a trailing clip (≥ `HP_SV_MINCLIP`, default **10** bp) ending within `HP_SV_PAD` of `bp5`, or
+a leading clip starting within `HP_SV_PAD` of `bp3`, is a read crossing that junction; its template is added to the
 cluster's support. This **only reinforces a junction already evidenced by ≥`minsupport` split reads —
 it can never create a call** (so the false-positive surface is unchanged: real healthy samples stay 0
 PASS), while recovering the ~11–15% of breakpoint-clipped reads the SA tag omits. Effect: `JR`/`AFJ`
@@ -346,9 +389,14 @@ AFC = clamp( 1 − trimmedMedian(inside) / trimmedMedian(flank), 0, 1 )   # PRIM
   inside = [bp5+TRANS+1 .. bp3−TRANS−1] ;  flank = FLANK bp beyond a TRANS pad at each breakpoint
   TRANS = HP_SV_TRANS[150] ;  FLANK = HP_SV_FLANK[200] ;  trimmed median drops 15% of each tail
   positions in the D-loop / origin / homopolymers (HP.bed.gz) / NUMT (NUMT.vcf.gz) are EXCLUDED from
-  both windows; if the interior is too small / over-masked the call falls back to AFJ (junction-only)
+  both windows
 CVGR = trimmedMedian(inside) / trimmedMedian(flank)                     # 1 = no drop
 ```
+> **Dosage fallback.** Each window must have ≥ `MINBASE` (fixed **50**) usable (unmasked) bases **and**
+> a positive flank median for the dosage to be trustworthy. Otherwise (a deletion smaller than ~2×TRANS,
+> or an over-masked interior) the call is marked *dosage-not-estimable*: `CVGR=1`, `AFC` falls back to
+> `AFJ`, and `SVCLAIM=J`. So sub-~300 bp deletions are quantified by the junction, not dosage.
+
 The **junction VAF** corroborates and is the depth-robust gate input:
 ```
 SR  = wild-type reads aligned reference-CONTIGUOUSLY across a breakpoint (true spanning count,
@@ -356,8 +404,14 @@ SR  = wild-type reads aligned reference-CONTIGUOUSLY across a breakpoint (true s
 AFJ = JR / (JR + SR)                                                    # corrected junction fraction
 AFDIFF = |AFJ − AFC|                                                    # junction-vs-dosage QC
 ```
-(The spanning boundary lies inside the `bp5..bp3` microhomology zone, so `SR` can wobble by a few
-reads if clustering picks the opposite repeat edge — bounded by `HOMLEN` and benign in practice.)
+*How `SR` is counted (`count_spanning_boundaries`, ONE BAM pass for all breakpoints):* a read template
+spans a boundary `B` if some aligned block covers **both** `B` and `B+1` (continuously matched across
+it); a read soft-clipped or SA-split *at* `B` has a block that ends at `B` and is correctly excluded
+(it carries the deletion, not the wild type). A template's primary + supplementary blocks are
+**unioned** by `query_name`, so an origin-crossing wild-type read (split by `circSam.pl`) still counts;
+`SR` for a junction is the **min** of the two breakpoints' counts (conservative). The spanning boundary
+lies inside the `bp5..bp3` microhomology zone, so `SR` can wobble by a few reads if clustering picks the
+opposite repeat edge — bounded by `HOMLEN` and benign in practice.
 > **Why this changed (v2).** v1 divided junction reads by the *entire* pileup, so on real high-copy
 > mtDNA (8,000–22,000×) every `AFJ` collapsed below 1% and junction-noise deletions slipped through
 > PASS. v2 reports the dosage `AF` and a *correctly normalised* `AFJ`; the two now agree for real
@@ -454,15 +508,16 @@ Example PASS record (del4977 @30%, from `test/sv/example/`):
 chrM  8482  .  A  <DEL>  .  PASS  SVTYPE=DEL;END=13446;SVLEN=-4964;SVCLAIM=DJ;IMPRECISE;
    CIPOS=0,13;CIEND=0,13;HOMLEN=13;HOMSEQ=ACCTCCCTCACCA;DELCLASS=I;
    GENE=ATP8:P,ATP6:F,COX3:F,TRNG:F,ND3:F,TRNR:F,ND4L:F,ND4:F,TRNH:F,TRNS2:F,TRNL2:F,ND5:P;
-   NGENE=12;COMMON;HGVS=NC_012920.1:m.8483_13446del;JR=133;SR=401;AFJ=0.249;AFC=0.268;
-   AFDIFF=0.019;CVGR=0.732;REPEAT   GT:DP:AD:AF:SR   0/1:575:401,133:0.268:133
+   NGENE=12;COMMON;HGVS=NC_012920.1:m.8483_13446del;JR=154;SR=401;AFJ=0.277;AFC=0.268;
+   AFDIFF=0.010;CVGR=0.732;SRCONS=1.000;SRSB=0.496;JSUP=HIGH;REPEAT   GT:DP:AD:AF:SR   0/1:575:401,154:0.268:154
 ```
-(`SR=401` is the wild-type **spanning** count; `AF=0.268` is `AFC`, the coverage-dosage heteroplasmy.)
+(`SR=401` is the wild-type **spanning** count; `AF=0.268` is `AFC`, the coverage-dosage heteroplasmy;
+`JR=154` reflects soft-clip harvesting; `JSUP=HIGH` from `SRCONS=1.0`/`SRSB=0.50` — a clean, balanced junction.)
 
 | Field | Meaning |
 |---|---|
 | `POS / END / SVLEN` | `bp5` / last deleted base (`bp3-1`) / `-(deleted bases)` (negative, 4.2) |
-| `SVCLAIM` | `DJ` (junction + coverage agree) or `J` (split-read only) — VCF 4.4 evidence claim |
+| `SVCLAIM` | `DJ` (junction + coverage agree) or `J` (split-read only) — VCF 4.4 evidence claim. Emitted on **every** record: initialised from the dosage signal (`DJ` when a dosage drop is present and estimable, else `J`), and forced to `J` on a junction-strong PASS. On a non-PASS record it indicates the *evidence type*, not the PASS path. |
 | `IMPRECISE`,`CIPOS`,`CIEND` | set when `HOMLEN>0`; CI = `0,HOMLEN` (breakpoint slides within the repeat) |
 | `HOMLEN`,`HOMSEQ` | breakpoint microhomology / direct-repeat length + sequence (13 / `ACCTCCCTCACCA` for del4977) |
 | `DELCLASS` | `I` (perfect repeat ≥5 bp) / `II` (1–4 bp microhomology) / `III` (none) |
@@ -478,10 +533,11 @@ chrM  8482  .  A  <DEL>  .  PASS  SVTYPE=DEL;END=13446;SVLEN=-4964;SVCLAIM=DJ;IM
 ### 6.2 `$O.sv.tab` (tidy/long, one row per sample-deletion)
 Header (parse by **name**, not position):
 `sample chrom pos_bp5 end_bp3 svlen svclaim jr sr af_junction af_coverage afdiff cvgr flank_dp
-homlen homseq delclass common ngene gene_list hgvs filter flags`.
+homlen homseq delclass common ngene gene_list hgvs filter flags srcons srsb jsup`.
 Null convention: numeric columns always populated; `homseq` empty when `homlen=0`; `gene_list`/`flags`
-comma-joined (or `.` when empty); `common` is `0/1`. `svlen` here is the **positive** deletion length
-(the VCF carries the signed `SVLEN`).
+comma-joined (or `.` when empty); `common` is `0/1`; `srcons`/`srsb` are 3-decimal floats and `jsup` ∈
+{`HIGH`,`MOD`,`LOW`} (the split-read evidence lens, §4.5). `svlen` here is the **positive** deletion
+length (the VCF carries the signed `SVLEN`).
 
 ### 6.3 Cohort aggregation (`getSVSummary.sh`, gated on `HP_SV`)
 Separate from `getSummary.sh` (never touched). bgzip+tabix-indexes each per-sample VCF, then writes:
@@ -502,7 +558,14 @@ a cohort; positional/fuzzy merging is a future refinement.)
 
 ---
 
-## 7. Parameters (all `HP_SV_*`, set in `init.sh`)
+## 7. Parameters (all `HP_SV_*`)
+
+The original eight (`HP_SV`, `MINMAPQ`, `MINJR`, `MINSIZE`, `MAXSIZE`, `PAD`, `DROP`, `FLANK`, `MINDP`)
+are declared in `init.sh`; the v2+ tunables below are resolved via `callSV.sh` `${VAR:-default}`
+fallbacks (so they need no edit to the frozen `init.sh` — set them in the environment to override).
+Fixed, non-`HP_SV_` constants that also gate calls: cluster floor `minsupport=2` (§4.3), origin guard
+`originpad=20` (the `WRAP` width), dosage-window floor `MINBASE=50` (§5.2), and the del4977 13 bp
+direct-repeat windows m.8470–8482 / 13447–13459 (§5.4).
 
 | Variable | Default | Meaning / effect |
 |---|---|---|
@@ -667,6 +730,16 @@ SV caller no longer shells out to them.
 
 ## Changelog
 
+- **v2.5 (doc sync + framing against established callers):** added **§0.5 "Relationship to established
+  methods"** — a comparison table positioning the caller against the mtDNA-specific tools (eKLIPse,
+  MitoSAlt, Damas/MitoBreak) and general SV callers (DELLY, LUMPY, Manta, GRIDSS), mapping each design
+  choice to its precedent and stating, honestly, what we deliberately don't do (no assembly, no
+  paired-end channel, no duplication/inversion calling, no probabilistic model). Re-synced the docs to
+  the v2.3/v2.4 code via a verification pass: refreshed the §6.1 example record (JR 133→154, +
+  `SRCONS`/`SRSB`/`JSUP`) and the §6.2 tab header (+ 3 columns); documented the `count_spanning_boundaries`
+  SR algorithm, the AFC `MINBASE=50` fallback, the `SVCLAIM` two-stage semantics, and the fixed
+  call-gating constants; corrected "two independent"→"complementary", the single-path PASS framing→two
+  paths (DJ/J), and "20 checks"→24; broadened the VCF `PASS` FILTER description. No algorithm change.
 - **v2.4 (split-read evidence lens — `JSUP`/`SRCONS`/`SRSB`):** split reads are *positional* evidence
   (single-base breakpoint), so a few reads all clipping at the same base is strong even when depth is
   silent (cf. LUMPY `SR`, Manta `SR` vs `PR`). The caller now emits a depth-independent junction-quality
