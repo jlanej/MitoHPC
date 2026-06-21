@@ -216,10 +216,14 @@ When implementing, honor these rules (they operationalize §0):
   `SVCLAIM`, `COMMON`, `GENE`/`NGENE`, `HGVS`, `FORMAT GT:DP:AD:AF:SR`; VCF 4.2 (negative `SVLEN`).
 - Wiring: `HP_SV` + `HP_SV_*` tunables in `init.sh`; validation + exports + gated summary in
   `run.sh`; one gated block in `filter.sh`. With `HP_SV` empty the pipeline is unchanged.
-- Tests/mock data: **`test/sv/`** — `run_test.py` (via `run_test.sh`) runs 20 checks against
-  committed mock BAMs (`test/sv/bams/`, ~13 MB total): 10 scenarios (multi-deletion, near-homoplasmy,
-  tandem-dup-not-called, origin-crossing, D-loop, low-coverage, …), degenerate inputs, cohort
-  recurrence, a `bcftools` VCF-spec gate, and a schema check on the committed example outputs.
+- Tests/mock data: **`test/sv/`** — `run_test.py` (via `run_test.sh`) runs 24 checks: 10 mock
+  scenarios (multi-deletion, near-homoplasmy, tandem-dup-not-called, origin-crossing, D-loop,
+  low-coverage, …) against committed mock BAMs (`test/sv/bams/`, ~13 MB), degenerate inputs, cohort
+  recurrence, a `bcftools` VCF-spec gate, a schema check on the committed example outputs, plus
+  real-data vetting under `test/sv/real/`: 3 healthy 1000G high-cov chrM → 0 PASS (specificity) and a
+  del4977 spiked into a real WT background → recovered PASS+COMMON (positive control). The v2 caller
+  reports coverage-dosage AF (AFC) as primary heteroplasmy with a corrected junction VAF (AFJ) and a
+  junction-strong PASS path; see `docs/SV_METHODS.md`.
 - Committed example outputs: **`test/sv/example/`** — a representative per-sample VCF/tab, the cohort
   `sv.tab`/`sv.merged.vcf.gz`/`sv.sites.vcf.gz`, and the interactive `sv.report.html`; regenerate with
   `test/sv/make_example.sh` (paths sanitized to repo-relative). See `test/sv/README.md`.

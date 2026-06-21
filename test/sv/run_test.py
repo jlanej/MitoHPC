@@ -304,23 +304,34 @@ def check_vcf_spec(outdir):
 
 
 def check_real(outdir):
-    """Real-data specificity: healthy 1000G high-coverage chrM samples (real/*.chrM.bam) carry no
-    large mtDNA deletion, so the caller must yield ZERO PASS calls. A false-positive guard the
-    simulated mocks cannot give (real NUMT/D-loop/error structure). Optional: skipped if absent."""
+    """Real-data vetting on committed real/*.chrM.bam (skipped if absent):
+      * healthy 1000G high-coverage samples (NA*.chrM.bam) -> ZERO PASS (specificity guard the
+        simulated mocks cannot give: real NUMT / D-loop / error structure);
+      * a del4977 SPIKED INTO a real WT background (spike_del4977_h*.chrM.bam) -> the deletion is
+        recovered (PASS + COMMON) with the right breakpoints and no off-target PASS (a realistic
+        positive control: real error/coverage + known truth). See real/README.md, real/gen_spike.sh."""
     realdir = os.path.join(HERE, "real")
     if not os.path.isdir(realdir):
         return
     bams = sorted(f for f in os.listdir(realdir) if f.endswith(".chrM.bam"))
     if not bams:
         return
-    print("[real-data specificity — healthy 1000G chrM must give 0 PASS]")
+    print("[real-data vetting — healthy (0 PASS) + del4977-into-real-background (positive control)]")
     for fn in bams:
         s = fn[:-len(".chrM.bam")]
         rc, _ = run_caller(s, os.path.join(realdir, fn), os.path.join(outdir, "real_" + s))
         rows = read_tab(os.path.join(outdir, "real_" + s + ".sv.tab"))
         npass = sum(1 for r in rows if r.get("filter") == "PASS")
-        record("real_%s" % s, rc == 0 and npass == 0,
-               "healthy real chrM: %d PASS (want 0), %d total calls" % (npass, len(rows)))
+        if s.startswith("spike_del4977"):
+            m = match_del(rows, 8469, 13447)               # the spiked common deletion
+            ok = (rc == 0 and m is not None and m["filter"] == "PASS"
+                  and m["common"] == "1" and npass == 1)   # recovered, COMMON, no off-target PASS
+            record("real_%s" % s, ok, "spiked del4977 -> %s common=%s AFC=%s; %d PASS total (want 1)"
+                   % (m["filter"] if m else "MISSING", m["common"] if m else "-",
+                      m["af_coverage"] if m else "-", npass))
+        else:
+            record("real_%s" % s, rc == 0 and npass == 0,
+                   "healthy real chrM: %d PASS (want 0), %d total calls" % (npass, len(rows)))
 
 
 # --------------------------------------------------------------------------- #

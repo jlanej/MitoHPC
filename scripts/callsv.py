@@ -227,17 +227,21 @@ def extract_junctions(bam, chrom, minmapq, minsize, maxsize, pad, minsupport, mt
             if svlen < minsize or svlen > maxsize:
                 continue
 
-            rid = r.query_name + ("/1" if r.is_read1 else "") + ("/2" if r.is_read2 else "")
-            pts.append((up, dn, rid, strand))
+            rid = r.query_name        # dedupe on TEMPLATE (a fragment = one molecule), matching the
+            pts.append((up, dn, rid, strand))     # SR spanning-read unit so AFJ=JR/(JR+SR) is unbiased
 
-    # greedy single-linkage clustering to the cluster seed (matches sa2del.pl)
+    # greedy single-linkage clustering: a point joins the current cluster if within `pad` of its
+    # LAST-ADDED member (transitive linkage), so a breakpoint smear wider than pad across a direct
+    # repeat is not silently fragmented into sub-minsupport pieces (the representative breakpoint is
+    # the mode of all members, recomputed below). (v1 perl sa2del.pl anchored to the fixed seed.)
     pts.sort(key=lambda x: (x[0], x[1]))
     clusters = []
     for p in pts:
-        if clusters and abs(p[0] - clusters[-1]["su"]) <= pad and abs(p[1] - clusters[-1]["sd"]) <= pad:
+        if (clusters and abs(p[0] - clusters[-1]["pts"][-1][0]) <= pad
+                and abs(p[1] - clusters[-1]["pts"][-1][1]) <= pad):
             clusters[-1]["pts"].append(p)
         else:
-            clusters.append({"su": p[0], "sd": p[1], "pts": [p]})
+            clusters.append({"pts": [p]})
 
     out = []
     for c in clusters:
