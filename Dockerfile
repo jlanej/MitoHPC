@@ -29,4 +29,5 @@ RUN \
   export HP_MT=RSRS && export HP_MTC=RSRSC && export HP_MTR=RSRSR && $HP_SDIR/install_prerequisites.sh && \
   HP_MT=RSRS $HP_SDIR/install_prerequisites.sh && \
   $HP_SDIR/checkInstall.sh && \
+  bash /MitoHPC/test/sv/run_test.sh && \
   rm -fr /MitoHPC/prerequisites/ /MitoHPC/examples*

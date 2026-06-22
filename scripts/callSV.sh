@@ -67,12 +67,16 @@ SRMINSB=${HP_SV_SRMINSB:-0.1}     # min strand balance for JSUP=HIGH
 test -s "$BAM"
 test -s "$RDIR/$MT.fa"
 
-# optional false-positive masks + gene annotation (flags / annotation only)
+# optional false-positive masks + gene annotation (flags / annotation only). A present mask is
+# applied; one that is ABSENT/EMPTY is reported, because a silently-missing NUMT/D-loop/HP mask does
+# not just drop annotation — it disables the fragile-region FILTER demotion, so an artifact deletion
+# could reach PASS undemoted. (A present-but-corrupt mask is caught separately in callsv.py.)
 maskopt=""
-[ -s "$RDIR/HP.bed.gz" ]    && maskopt="$maskopt --hp $RDIR/HP.bed.gz"
-[ -s "$RDIR/NUMT.vcf.gz" ]  && maskopt="$maskopt --numt $RDIR/NUMT.vcf.gz"
-[ -s "$RDIR/DLOOP.bed.gz" ] && maskopt="$maskopt --dloop $RDIR/DLOOP.bed.gz"
-[ -s "$RDIR/genes.bed.gz" ] && maskopt="$maskopt --genes $RDIR/genes.bed.gz"
+warn_mask() { echo "[callSV] WARNING: $RDIR/$1 absent/empty — $2 DISABLED for $S" >&2; }
+if [ -s "$RDIR/HP.bed.gz" ]    ; then maskopt="$maskopt --hp $RDIR/HP.bed.gz"       ; else warn_mask HP.bed.gz    "homopolymer FP flag"             ; fi
+if [ -s "$RDIR/NUMT.vcf.gz" ]  ; then maskopt="$maskopt --numt $RDIR/NUMT.vcf.gz"   ; else warn_mask NUMT.vcf.gz  "NUMT FP flag/fragile-demotion"   ; fi
+if [ -s "$RDIR/DLOOP.bed.gz" ] ; then maskopt="$maskopt --dloop $RDIR/DLOOP.bed.gz" ; else warn_mask DLOOP.bed.gz "D-loop FP flag/fragile-demotion" ; fi
+if [ -s "$RDIR/genes.bed.gz" ] ; then maskopt="$maskopt --genes $RDIR/genes.bed.gz" ; else warn_mask genes.bed.gz "affected-gene annotation"        ; fi
 
 # tool version for provenance (##source): git describe, else VERSION.md, else 'dev'
 VER=dev

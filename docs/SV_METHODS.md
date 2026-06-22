@@ -620,15 +620,20 @@ direct-repeat windows m.8470–8482 / 13447–13459 (§5.4).
 
 ## 8. Circular-genome handling
 
-The module inherits circular correctness from the existing pipeline rather than re-implementing it:
+The module inherits circular-correct **detection input** from the existing pipeline rather than
+re-implementing it — but note (third bullet) this is detection input, not full origin resolution:
 - `$O.bam` was produced by `circSam.pl` from reads aligned to the **circularized** reference
   `chrMC` (`HP_E=300` bp appended), so a read crossing the artificial origin already has its parts
   wrapped into 1..16569.
 - In `callsv.py`, every coverage window wraps modulo `mtlen`, so flanks straddling 16569/1 are
   computed correctly.
-- v1 **does not** disambiguate a circular deletion from its complementary-arc duplication; junctions
-  at the origin are flagged `WRAP` and kept out of PASS (deferred to a future tier — see roadmap in
-  `SV_CALLING.md` §10).
+- Junction `svlen` is, however, computed **linearly** (`bp3-bp5-1`, no modulo). A deletion whose
+  *deleted arc* spans the origin therefore has no positive-length linear form: it is detected-but-
+  **suppressed** (negative svlen → dropped at the `minsize` gate, or `WRAP`-flagged out of PASS),
+  never mis-called. So origin-spanning deletions are not yet *resolved*, only safely withheld.
+- Relatedly, v1 **does not** disambiguate a circular deletion from its complementary-arc duplication;
+  junctions at the origin are flagged `WRAP` and kept out of PASS (deferred to a future tier — see
+  roadmap in `SV_CALLING.md` §10).
 
 ---
 

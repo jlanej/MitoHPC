@@ -77,8 +77,22 @@ def rnd(x):
     return int(x + 0.5)
 
 
+def warn_mask(path, e):
+    """A supplied mask/annotation file could not be read. callSV.sh only passes a path when the
+    file is non-empty, so reaching here means the file became unreadable AFTER that check —
+    truncated or corrupt (gzip.BadGzipFile subclasses OSError). Silently degrading to an empty
+    mask would disable a false-positive control (NUMT/HP/DLOOP) WITHOUT a coverage drop, so an
+    artifact deletion could reach PASS undemoted; warn loudly instead (the call still proceeds
+    so SNV/CN deliverables are unaffected, but the lost control is now visible in the log)."""
+    sys.stderr.write("[callsv] WARNING: could not read %s (%s) — its false-positive control / "
+                     "annotation is DISABLED for this sample\n" % (path, e))
+
+
 def load_bed_gz(path):
-    """BED(.gz) -> list of [start1, end1] 1-based inclusive intervals."""
+    """BED(.gz) -> list of [start1, end1] 1-based inclusive intervals.
+
+    A None path means the mask was intentionally not supplied (silently empty); a supplied-but-
+    unreadable path warns via warn_mask (see there)."""
     iv = []
     if not path:
         return iv
@@ -90,8 +104,8 @@ def load_bed_gz(path):
                 f = line.split()
                 if len(f) >= 3 and f[1].isdigit():
                     iv.append((int(f[1]) + 1, int(f[2])))
-    except OSError:
-        pass
+    except OSError as e:
+        warn_mask(path, e)
     return iv
 
 
@@ -108,8 +122,8 @@ def load_vcf_pos(path):
                 f = line.split()
                 if len(f) >= 2 and f[1].isdigit():
                     s.add(int(f[1]))
-    except OSError:
-        pass
+    except OSError as e:
+        warn_mask(path, e)
     return s
 
 
@@ -157,8 +171,8 @@ def load_genes(path, chrom):
                 f = line.split()
                 if len(f) >= 4 and f[0] == chrom and f[1].isdigit():
                     iv.append((int(f[1]) + 1, int(f[2]), f[3]))
-    except OSError:
-        pass
+    except OSError as e:
+        warn_mask(path, e)
     return iv
 
 
@@ -424,6 +438,14 @@ def call(args):
     genes = load_genes(args.genes, args.chrom)
     rep = (args.rep5a, args.rep5b, args.rep3a, args.rep3b)
 
+    # mask provenance (emitted as ##callsvMasks): 'off' = not supplied, else the loaded count, so a
+    # reviewer can confirm the false-positive controls were actually populated and not silently empty.
+    def mask_tag(path, n):
+        return "off" if not path else str(n)
+    masks_prov = "hp:%s,numt:%s,dloop:%s,genes:%s" % (
+        mask_tag(args.hp, len(hp)), mask_tag(args.numt, len(numt)),
+        mask_tag(args.dloop, len(dloop)), mask_tag(args.genes, len(genes)))
+
     def masked(p):   # fragile positions excluded from the dosage windows (control region, origin,
         return (in_iv(dloop, p) or in_iv(hp, p) or (p in numt)   # homopolymers, NUMT-like sites)
                 or p <= args.originpad or p >= m - args.originpad)
@@ -575,7 +597,7 @@ def call(args):
             "%.3f" % srcons, "%.3f" % srsb, jsup]))
 
     vcf_records.sort(key=lambda r: r[0])     # POS-sorted
-    write_vcf(args, [r[1] for r in vcf_records], seq)
+    write_vcf(args, [r[1] for r in vcf_records], seq, masks_prov)
     if args.tab:
         with open(args.tab, "w") as t:
             t.write("\t".join(TAB_COLUMNS) + "\n")
@@ -584,7 +606,7 @@ def call(args):
     sys.stderr.write("[callsv] %s -> %s (%d records)\n" % (args.sample, args.out, len(vcf_records)))
 
 
-def write_vcf(args, records, seq):
+def write_vcf(args, records, seq, masks_prov=""):
     """Emit a spec-correct VCFv4.2: dynamic provenance + contig/reference headers, the
     static field definitions from the template, a #CHROM line whose genotype column is the
     real sample name, then the records."""
@@ -596,6 +618,8 @@ def write_vcf(args, records, seq):
     out.write("##contig=<ID=%s,length=%d,md5=%s>\n" % (args.chrom, args.mtlen, fasta_md5(seq)))
     out.write("##sample=%s\n" % args.sample)
     out.write('##callsv_command="%s"\n' % " ".join(sys.argv))
+    if masks_prov:   # false-positive-control provenance: off|<intervals loaded> per mask
+        out.write("##callsvMasks=%s\n" % masks_prov)
     # name each provenance line by its real HP_SV_* env var (the argparse key 'mindepth' is exposed
     # as HP_SV_MINDP in init.sh/callSV.sh, so don't emit the literal-uppercased 'MINDEPTH')
     param_env = {"minmapq": "MINMAPQ", "minclip": "MINCLIP", "minjr": "MINJR", "minsize": "MINSIZE", "maxsize": "MAXSIZE",

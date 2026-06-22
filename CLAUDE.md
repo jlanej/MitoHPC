@@ -86,7 +86,12 @@ reinvent it.**
 
 **Implication for SV calling:** an SV / junction that crosses the origin must be detectable. The
 existing split-read representation already encodes origin-crossing reads, so a split-read-based
-caller inherits circular correctness "for free." Any coverage/segmentation method must treat
+caller inherits circular-correct **detection input** "for free" — the wrapped split reads plus
+coverage windows that wrap modulo `HP_MTLEN` (both true in `callsv.py`). This is **not** the same as
+resolving every origin event: `callsv.py` computes junction `svlen` linearly (`bp3-bp5-1`), so a
+deletion whose *deleted arc* spans the artificial origin is detected-but-suppressed (negative svlen →
+dropped, or `WRAP`-flagged out of PASS), never a wrong call but also not yet resolved (del-vs-
+complementary-arc-dup; see `docs/SV_METHODS.md` §8). Any coverage/segmentation method must treat
 position 1 and 16569 as adjacent.
 
 ---
