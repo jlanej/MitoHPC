@@ -77,6 +77,7 @@ if [ -s "$RDIR/HP.bed.gz" ]    ; then maskopt="$maskopt --hp $RDIR/HP.bed.gz"   
 if [ -s "$RDIR/NUMT.vcf.gz" ]  ; then maskopt="$maskopt --numt $RDIR/NUMT.vcf.gz"   ; else warn_mask NUMT.vcf.gz  "NUMT FP flag/fragile-demotion"   ; fi
 if [ -s "$RDIR/DLOOP.bed.gz" ] ; then maskopt="$maskopt --dloop $RDIR/DLOOP.bed.gz" ; else warn_mask DLOOP.bed.gz "D-loop FP flag/fragile-demotion" ; fi
 if [ -s "$RDIR/genes.bed.gz" ] ; then maskopt="$maskopt --genes $RDIR/genes.bed.gz" ; else warn_mask genes.bed.gz "affected-gene annotation"        ; fi
+if [ -s "$RDIR/MLC.vcf.gz" ]   ; then maskopt="$maskopt --mlc $RDIR/MLC.vcf.gz"     ; else warn_mask MLC.vcf.gz   "SVIMPACT constraint-intensity"   ; fi
 
 # tool version for provenance (##source): git describe, else VERSION.md, else 'dev'
 VER=dev

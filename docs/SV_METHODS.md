@@ -499,6 +499,60 @@ The primary NUMT defense is upstream: `$O.bam` was already built by competing re
 NUMT reference (`filter.sh`), and the mandatory coverage-drop gate removes chimeras that lack a
 real dosage loss.
 
+### 5.5 Two orthogonal per-call scores: `SVCONF` (confidence) and `SVIMPACT` (biological impact)
+
+Each call carries two independent 0–100 scores answering different questions. **Confidence** = "is this
+a real deletion or an artifact?" **Impact** = "how functionally damaging would it be *if real*?" They are
+deliberately decoupled: a low-VAF real deletion can be low-confidence yet high-impact, and a strong
+control-region artifact can be high-evidence yet low-confidence. Neither feeds the PASS/FILTER decision —
+both are additive `INFO`/tab fields for curation and ranking. Every input is a ratio, a saturating count,
+or a categorical biology fact, so both are **depth-stable** (the property a LoD sweep needs).
+
+**`SVCONF` — call confidence** (`callsv.py: svconf_score`). Built only from existing per-call signals:
+
+```
+SVCONF = clamp( Q + H + DJ − PEN , 0, 100)        # '.' (NA) for WRAP/origin calls
+  Q  = 14·SRCONS + 10·min(SRSB/0.40,1) + 8·log1p(min(JR,20))/log1p(20)   # evidence quality, depth-independent
+  H  = 40·min(het/0.30, 1),   het = AFC if dosage estimable else AFJ      # heteroplasmy magnitude (monotone)
+  DJ = 16·max(0, 1 − |AFJ−AFC|/max(AFJ,AFC))   only when a real coverage drop corroborates (else 0)
+  PEN= 16·[nfragile≥1] + 16·[nfragile≥2]        # fragile categories (DLOOP/HP/NUMT/WRAP) at either breakpoint
+```
+
+`H` rises monotonically with heteroplasmy (saturating at 30%); `DJ` uses *relative* junction-vs-dosage
+agreement (not absolute `AFDIFF`, which grows with het and would invert the score at high VAF); `PEN`
+double-weights the both-ends-fragile homopolymer signature of the recurrent control-region artifact.
+Bands: **HIGH 70–100**, **MEDIUM 40–69**, **LOW 15–39**, **VERY-LOW 0–14**. Worked: del4977 @30% (DJ,
+non-fragile) → **83**; the same del @5% (junction-only, low dosage) → **35**; a `cvg-gain` duplication
+mis-as-DEL → **32**; the recurrent m.310_955 control-region artifact → **~0–8**.
+
+**`SVIMPACT` — biological impact if real** (`callsv.py: svimpact_score`). mtDNA-deletion severity is
+near-categorical, so the score is the **max of calibrated biology floors** plus a small continuous
+tie-breaker (constraint intensity + genome fraction) that orders calls *within* a band:
+
+| Floor | Condition |
+|---|---|
+| **95** | a replication origin removed (OriH m.110–441 or OriL m.5721–5798 fully deleted) → replication-incompetent |
+| 70 | an origin partially overlapped |
+| **78** | ≥3 tRNA/rRNA genes fully deleted (e.g. del4977) — massive translation loss |
+| 62 | **any** one tRNA or rRNA fully deleted — translation-lethal (a single lost tRNA halts all mt-protein synthesis) |
+| 60 | ≥2 distinct OXPHOS complexes disrupted (Complex I/III/IV/V from gene names `ND*`/`CYTB`/`COX*`/`ATP*`) |
+| 45 | a full protein-coding gene deleted |
+| 25 | a protein-coding gene partially deleted |
+
+`tie = 8·intensity + 4·size_frac`, where `intensity = clamp((mean MLC over the deleted span − 0.10)/0.65, 0, 1)`
+(MLC = the Yale per-base **M**itochondrial **L**ocal **C**onstraint score, `RefSeq/MLC.vcf.gz`, averaged over
+its ALT rows, missing positions skipped) and `size_frac = min((SVLEN/16569)/0.5, 1)`. Bands: **SEVERE ≥80**,
+**HIGH 50–79**, **MODERATE 20–49**, **LOW <20**. Worked: del4977 → **85 (SEVERE)**; an OriL-removing
+major-arc deletion → **100**; a partial single-CDS nick → **~32 (MODERATE)**; a control-region-only
+deletion sparing the origins → **LOW**. `SVIMPACT` uses no read counts or VAF, so it is identical for the
+same deletion at any heteroplasmy or depth.
+
+> **Calibration note.** The `SVCONF` weights and the `SVIMPACT` floor/band cut-points are expert-set
+> starting values. They are intended to be tuned against a labelled set — a heteroplasmy × depth LoD
+> sweep for `SVCONF` monotonicity/separation, and MITOMAP/KSS-Pearson-CPEO pathogenic single deletions
+> vs benign control-region indels for `SVIMPACT` — before being treated as fixed. The structure (which
+> signals, which direction) is the robust part; the numbers are the tunable part.
+
 ---
 
 ## 6. Output schema

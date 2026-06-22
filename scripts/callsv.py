@@ -19,6 +19,7 @@ import argparse
 import datetime
 import gzip
 import hashlib
+import math
 import os
 import sys
 from collections import Counter
@@ -31,6 +32,13 @@ REF_CONSUMING = frozenset("MDN=X")  # CIGAR ops that advance the reference
 COMMON_BP5 = (8470, 8482)
 COMMON_BP3 = (13447, 13459)
 COMMON_SVLEN = (4960, 4990)
+
+# OXPHOS complex membership of each mtDNA protein-coding gene (Complex II is nuclear-encoded -> absent).
+# Used by the biological-impact score to count distinct complexes a deletion disrupts.
+OXPHOS_COMPLEX = {"ND1": "I", "ND2": "I", "ND3": "I", "ND4": "I", "ND4L": "I", "ND5": "I", "ND6": "I",
+                  "CYTB": "III", "COX1": "IV", "COX2": "IV", "COX3": "IV", "ATP6": "V", "ATP8": "V"}
+ORIH = (110, 441)     # origin of heavy-strand replication (within the D-loop); removal => replication-dead
+ORIL = (5721, 5798)   # origin of light-strand replication
 
 
 def wrap1(p, m):
@@ -174,6 +182,43 @@ def load_genes(path, chrom):
     except OSError as e:
         warn_mask(path, e)
     return iv
+
+
+def load_mlc(path):
+    """MLC.vcf.gz -> {pos1: mean MLC_score over that position's ALT rows}.
+
+    The Yale mitochondrial local-constraint score (Lake et al. 2024) is ~per-position but stored
+    per-ALT; averaging the ALT rows gives a reproducible, ALT-independent per-base constraint value
+    (range ~0..6, genome mean ~0.43, low in the D-loop, high in tRNA/rRNA/constrained codons). POS is
+    already 1-based (NO +1, unlike the BED loaders). A few positions have no record and are simply
+    absent -> span aggregation divides by the positions PRESENT, never by span length."""
+    acc = {}
+    if not path:
+        return acc
+    try:
+        with gzip.open(path, "rt") as fh:
+            for line in fh:
+                if line.startswith("#"):
+                    continue
+                f = line.split("\t")
+                if len(f) < 8 or not f[1].isdigit():
+                    continue
+                sc = None
+                for kv in f[7].split(";"):
+                    if kv.startswith("MLC_score="):
+                        try:
+                            sc = float(kv[10:])
+                        except ValueError:
+                            sc = None
+                        break
+                if sc is None:
+                    continue
+                p = int(f[1])
+                s, n = acc.get(p, (0.0, 0))
+                acc[p] = (s + sc, n + 1)
+    except OSError as e:
+        warn_mask(path, e)
+    return {p: s / n for p, (s, n) in acc.items()}
 
 
 def genes_in_deletion(genes, d1, d2):
@@ -413,7 +458,90 @@ def spanning_count(span_by_b, bp5, bp3):
 TAB_COLUMNS = ["sample", "chrom", "pos_bp5", "end_bp3", "svlen", "svclaim", "jr", "sr",
                "af_junction", "af_coverage", "afdiff", "cvgr", "flank_dp", "homlen",
                "homseq", "delclass", "common", "ngene", "gene_list", "hgvs", "filter", "flags",
-               "srcons", "srsb", "jsup"]   # split-read evidence lens (depth-independent)
+               "srcons", "srsb", "jsup",          # split-read evidence lens (depth-independent)
+               "svconf", "svimpact", "svimpact_band"]   # call-confidence + biological-impact scores
+
+
+def svconf_score(jr, afj, afc, dose, ratio, srcons, srsb, nfragile, wrapf, drop):
+    """Per-call CONFIDENCE in [0,100] (higher = more likely a TRUE deletion), or None (-> '.') for
+    origin/WRAP calls whose breakpoints are not trustworthy.
+
+    Built ONLY from depth-stable ratios + a saturating count so it rises MONOTONICALLY with heteroplasmy
+    and is comparable across sequencing depths (the property a LoD sweep needs). Three parts:
+      Q  evidence QUALITY (real-vs-artifact, depth-independent): split-read size-consistency SRCONS,
+         strand balance SRSB, and a log-saturated junction-read count.
+      H  heteroplasmy MAGNITUDE (monotone in het, depth-stable RATIO): the dosage AF (AFC) when
+         estimable, else the junction AF (AFJ), ramped to a 30% ceiling.
+      DJ junction<->dosage AGREEMENT bonus, only when a real coverage drop corroborates; RELATIVE-
+         normalized (|AFJ-AFC|/max(AFJ,AFC)) so it does not grow with het (the v1 absolute-AFDIFF
+         penalty made the score non-monotonic at high het).
+    minus a fragile-region PENALTY (DLOOP/HP/NUMT/WRAP at either breakpoint; double-penalized when
+    >=2 categories apply — the recurrent control-region homopolymer artifact signature)."""
+    if wrapf:
+        return None
+    sat_jr = math.log1p(min(jr, 20)) / math.log1p(20)            # 0..1, saturates at JR=20 (depth-stable)
+    q = 14.0 * srcons + 10.0 * min(srsb / 0.40, 1.0) + 8.0 * sat_jr
+    het = afc if dose else afj                                   # dosage AF preferred; junction AF fallback
+    h = 40.0 * min(het / 0.30, 1.0)
+    dj = 0.0
+    if dose and ratio <= drop:                                   # a real coverage drop corroborates
+        dj = 16.0 * max(0.0, 1.0 - abs(afj - afc) / max(afc, afj, 1e-6))
+    pen = (16.0 if nfragile >= 1 else 0.0) + (16.0 if nfragile >= 2 else 0.0)
+    return int(round(max(0.0, min(100.0, q + h + dj - pen))))
+
+
+def svimpact_score(gene_list, bp5, end, svlen, mlc):
+    """Per-call BIOLOGICAL-IMPACT in [0,100] (higher = more damaging IF REAL), INDEPENDENT of call
+    confidence/heteroplasmy (a low-AF call still scores high if the deleted arc is catastrophic).
+
+    mtDNA-deletion impact is near-CATEGORICAL, so the score is the MAX of calibrated biology floors
+    (replication-origin loss / tRNA|rRNA loss / multi-complex knockout / protein-gene loss) plus a small
+    continuous tie-breaker (MLC constraint intensity + genome fraction) that orders calls WITHIN a band.
+    Returns (score, band, mlc_mean, n_complexes). gene_list is the genes_in_deletion 'name:F|P' list."""
+    ntrna_f = nrnr_f = ncds_f = ncds_p = 0
+    cplx = set()
+    for g in gene_list:
+        name, fp = g.rsplit(":", 1)
+        if name.startswith("TRN"):
+            ntrna_f += (fp == "F")
+        elif name.startswith("RNR"):
+            nrnr_f += (fp == "F")
+        elif name in OXPHOS_COMPLEX:
+            ncds_f += (fp == "F")
+            ncds_p += (fp == "P")
+            cplx.add(OXPHOS_COMPLEX[name])
+    d_lo, d_hi = bp5 + 1, end                                   # deleted span (1-based inclusive)
+
+    def removed(a, b):                                          # 2=fully deleted, 1=partial, 0=untouched
+        if d_lo <= a and b <= d_hi:
+            return 2
+        return 1 if (d_lo <= b and a <= d_hi) else 0
+    oh, ol = removed(*ORIH), removed(*ORIL)
+
+    floor = 0
+    if oh == 2 or ol == 2:
+        floor = 95                                             # origin removed -> replication-incompetent
+    elif oh == 1 or ol == 1:
+        floor = max(floor, 70)
+    if ntrna_f + nrnr_f >= 3:
+        floor = max(floor, 78)                                 # massive translation loss (e.g. del4977)
+    elif ntrna_f >= 1 or nrnr_f >= 1:
+        floor = max(floor, 62)                                 # ANY full tRNA/rRNA = translation-lethal
+    if len(cplx) >= 2:
+        floor = max(floor, 60)                                 # multi-complex OXPHOS knockout
+    if ncds_f >= 1:
+        floor = max(floor, 45)                                 # a full protein ORF lost
+    elif ncds_p >= 1:
+        floor = max(floor, 25)                                 # partial protein ORF (truncation)
+
+    span = [mlc[p] for p in range(d_lo, d_hi + 1) if p in mlc] if (mlc and d_hi >= d_lo) else []
+    mlc_mean = (sum(span) / len(span)) if span else 0.0
+    intensity = max(0.0, min(1.0, (mlc_mean - 0.10) / (0.75 - 0.10)))   # 0.10 D-loop floor .. 0.75 high
+    sizef = min((svlen / 16569.0) / 0.50, 1.0)
+    tie = 8.0 * intensity + 4.0 * sizef
+    score = int(round(max(0.0, min(100.0, floor + tie))))
+    band = "SEVERE" if score >= 80 else "HIGH" if score >= 50 else "MODERATE" if score >= 20 else "LOW"
+    return score, band, mlc_mean, len(cplx)
 
 
 def call(args):
@@ -436,15 +564,16 @@ def call(args):
     dloop = load_bed_gz(args.dloop)
     numt = load_vcf_pos(args.numt)
     genes = load_genes(args.genes, args.chrom)
+    mlc = load_mlc(args.mlc)            # per-base local-constraint scores for the biological-impact score
     rep = (args.rep5a, args.rep5b, args.rep3a, args.rep3b)
 
     # mask provenance (emitted as ##callsvMasks): 'off' = not supplied, else the loaded count, so a
     # reviewer can confirm the false-positive controls were actually populated and not silently empty.
     def mask_tag(path, n):
         return "off" if not path else str(n)
-    masks_prov = "hp:%s,numt:%s,dloop:%s,genes:%s" % (
+    masks_prov = "hp:%s,numt:%s,dloop:%s,genes:%s,mlc:%s" % (
         mask_tag(args.hp, len(hp)), mask_tag(args.numt, len(numt)),
-        mask_tag(args.dloop, len(dloop)), mask_tag(args.genes, len(genes)))
+        mask_tag(args.dloop, len(dloop)), mask_tag(args.genes, len(genes)), mask_tag(args.mlc, len(mlc)))
 
     def masked(p):   # fragile positions excluded from the dosage windows (control region, origin,
         return (in_iv(dloop, p) or in_iv(hp, p) or (p in numt)   # homopolymers, NUMT-like sites)
@@ -564,6 +693,13 @@ def call(args):
         refbase = seq[bp5 - 1].upper() if 1 <= bp5 <= len(seq) else "N"
         hgvs = "NC_012920.1:m.%d_%ddel" % (bp5 + 1, end)
 
+        # --- (4) two ORTHOGONAL per-call scores (additive; see docs/SV_METHODS §9):
+        #   SVCONF   = call confidence (true-vs-artifact), from depth-stable evidence - fragile penalty
+        #   SVIMPACT = biological impact IF REAL, from gene/origin/complex content + MLC intensity
+        nfragile = sum((in_dloop, in_hp, in_numt, wrapf))      # fragile categories at either breakpoint
+        svconf = svconf_score(jr, afj, afc, dose, ratio, srcons, srsb, nfragile, wrapf, args.drop)
+        svimpact, svimpact_band, mlc_mean, ncplx = svimpact_score(gene_list, bp5, end, svlen, mlc)
+
         # INFO (site-level; sample identity is the genotype COLUMN, never an INFO field)
         info = ["SVTYPE=DEL", "END=%d" % end, "SVLEN=%d" % (-svlen), "SVCLAIM=%s" % svclaim]
         if homlen > 0:
@@ -580,7 +716,9 @@ def call(args):
         info.append("HGVS=%s" % hgvs)
         info += ["JR=%d" % jr, "SR=%d" % sr, "AFJ=%.3f" % afj, "AFC=%.3f" % afc,
                  "AFDIFF=%.3f" % afdiff, "CVGR=%.3f" % ratio,
-                 "SRCONS=%.3f" % srcons, "SRSB=%.3f" % srsb, "JSUP=%s" % jsup]
+                 "SRCONS=%.3f" % srcons, "SRSB=%.3f" % srsb, "JSUP=%s" % jsup,
+                 "SVCONF=%s" % (svconf if svconf is not None else "."),
+                 "SVIMPACT=%d" % svimpact, "SVIMPACT_BAND=%s" % svimpact_band]
         info += flags
 
         # FORMAT AF carries the PRIMARY (coverage-dosage) heteroplasmy AFC, not AFJ; AD = SR,JR.
@@ -594,7 +732,8 @@ def call(args):
             homlen, homseq, delclass, 1 if common else 0, len(gene_list),
             ",".join(gene_list) if gene_list else ".", hgvs,
             flt, ",".join(flags) if flags else ".",
-            "%.3f" % srcons, "%.3f" % srsb, jsup]))
+            "%.3f" % srcons, "%.3f" % srsb, jsup,
+            svconf if svconf is not None else ".", svimpact, svimpact_band]))
 
     vcf_records.sort(key=lambda r: r[0])     # POS-sorted
     write_vcf(args, [r[1] for r in vcf_records], seq, masks_prov)
@@ -687,6 +826,7 @@ def main():
     p.add_argument("--numt")
     p.add_argument("--dloop")
     p.add_argument("--genes", help="6-col BED(.gz) of mtDNA features for affected-gene annotation")
+    p.add_argument("--mlc", help="MLC.vcf.gz per-base local-constraint scores for the SVIMPACT intensity term")
     p.add_argument("--version", help="tool version string for the VCF ##source line")
     # Fixed v1 constants (callSV.sh does not expose these as HP_SV_*; the canonical defaults
     # live here, used for standalone/test invocation): cluster floor, origin guard, and the
