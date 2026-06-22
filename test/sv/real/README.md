@@ -21,6 +21,23 @@ on, all configurations recover identical `JR`/PASS/breakpoint, so the production
 limit split-read deletion detection (see `docs/SV_METHODS.md` §4.4). Needs `bwa` + `minimap2`. Regenerate/extend with
 `HP_SDIR=../../scripts HP_RDIR=../../RefSeq python3 ../titration.py`.
 
+Also committed: **`lod_sweep.tsv`** + **`lod_report/`** — the quantitative LoD &amp; accuracy evaluation
+(`../lod_sweep.py` → `../lod_report.py`; see `docs/SV_METHODS.md` §10.1–10.2). `lod_sweep.tsv` is one
+row per caller run over a heteroplasmy × depth grid, in two arms — **SIM** (simulated WT+event mixture)
+and **REAL** (event spiked into the real 1000G WT backgrounds here) — plus a control-region homopolymer
+`HP_ARTIFACT` hard-negative and an `ORIGIN` suppression check. `lod_report/index.html` is the
+self-contained offline report (9 figures): the LoD surface + probit LoD50/95, `SVCONF`-vs-VAF
+monotonicity, true-vs-artifact `SVCONF` separation, ROC/PR, calibration (raw + isotonic), Bland-Altman
+heteroplasmy accuracy, and sim↔real concordance. Committed data is the tractable `--quick` grid
+(`del4977` PASS LoD95 ≈ 6% sim / ~8% real at production depth; 0 PASS on negatives; artifact median
+`SVCONF` 9 vs true-del 42; AUPRC 0.97). Regenerate:
+```bash
+HP_SDIR=../../scripts HP_RDIR=../../RefSeq python3 ../lod_sweep.py --quick   # ~1h; --full for the publication grid
+HP_SDIR=../../scripts HP_RDIR=../../RefSeq python3 ../lod_report.py          # needs numpy/scipy/matplotlib
+```
+Needs `samtools` + `minimap2` (sweep) and `numpy`/`scipy`/`matplotlib` (report) — dev/eval deps only,
+never pipeline runtime deps.
+
 Each is the **circular-aware `$O.bam`** (chrM reads extracted from the public GRCh38 CRAM — GRCh38
 chrM == rCRS == `RefSeq/chrM.fa` — subsampled to the pipeline's working depth, then realigned
 through `minimap2 -ax sr chrMC → -F 0x90C → circSam.pl`). 1000G high-coverage data is open-access

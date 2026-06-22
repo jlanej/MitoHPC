@@ -744,6 +744,63 @@ aggregation, a VCF-spec gate, and a schema check on the committed `example/` out
 positive control). See [`../test/sv/README.md`](../test/sv/README.md) and
 [`../test/sv/real/README.md`](../test/sv/real/README.md) for layout and regeneration.
 
+### 10.1 Quantitative LoD &amp; accuracy evaluation (`lod_sweep.py` + `lod_report.py`)
+
+The pass/fail suite above proves the caller *works*; this evaluation **quantifies how well**, on a
+heteroplasmy × depth grid, and produces the figures that defend the `SVCONF` calibration. It follows
+**CLSI EP17-A2** (limit of detection as a *surface*, not a scalar) and in-silico spike-in benchmark
+practice (BAMSurgeon/GIAB philosophy: known truth, realistic noise, negatives, replicate units).
+
+**Two arms, one grid.** `test/sv/lod_sweep.py` runs every replicate through the *real* circular
+pipeline path (`minimap2 → -F 0x90C → circSam.pl → callSV.sh`) and writes one tidy row per call to
+`real/lod_sweep.tsv`:
+- **SIM** — a simulated wild-type + event mixture at a target VAF/depth (cheap → carries the full grid
+  and the confidence intervals).
+- **REAL** — the same event **spiked into a real 1000G WT chrM background** (NA12718/48/75: extract WT
+  FASTQ, inject *D* event read-pairs, realign) → real error/NUMT/coverage structure validates that the
+  simulated grid is not a simulator artifact (sim↔real concordance, F8).
+- **Variants:** `del4977` (repeat-mediated, COMMON), `NONREP` (~5 kb, no repeat — recovery is not
+  repeat-specific), `ORIGIN` (origin-crossing → must be WRAP-suppressed), and `HP_ARTIFACT` =
+  `del(305,965)` whose **both breakpoints sit in the D-loop poly-C homopolymer** (`nfragile=2`) — the
+  dominant real-cohort false positive, used as the **hard negative** that defends the fragile penalty
+  (sized > `MINSIZE` so it is actually emitted and can be scored).
+- **Negatives:** the `VAF=0` column of each arm + the three healthy real BAMs (specificity / LoB).
+- **Reproducibility:** every replicate's integer seed is a deterministic `crc32(variant,vaf,depth,rep)`,
+  injective over the grid (asserted) and `PYTHONHASHSEED`-independent, and is written into the TSV.
+
+**Derived metrics & figures** (`test/sv/lod_report.py` → `real/lod_report/index.html`, self-contained,
+offline; matplotlib/numpy/scipy are *dev-harness* deps, never pipeline runtime deps): per-cell
+sensitivity with **Wilson** CIs; **LoD50/LoD95 per depth via both probit and logistic** regression
+(model-robustness) with a **cluster bootstrap over replicate units** for the CI; ROC + **precision-recall
+(AUPRC headline, class-imbalanced)** and **MCC** at the PASS operating point; **calibration** reported
+honestly as the raw reliability diagram + ECE/Brier **and** an **isotonic (PAVA) recalibration** on a
+held-out split (so the raw hand-weighted `SVCONF` is treated as a *ranking* score and only becomes a
+probability through the documented map); heteroplasmy accuracy as per-VAF bias + Bland-Altman (with the
+low-VAF `AFC`→0 censoring flagged). Nine figures: F1 LoD heatmap, F2 probit dose-response + LoD95, F3
+`SVCONF`-vs-VAF monotonicity/depth-overlap, F4 TP-vs-artifact separation, F5 ROC+PR, F6 calibration, F7
+Bland-Altman, F8 sim↔real concordance, F9 origin/non-repeat behaviour.
+
+> The committed `real/lod_sweep.tsv` + `real/lod_report/` come from the **`--quick`** grid (a tractable
+> multi-replicate run, regenerable in one command). The publication-grade **`--full`** grid (14 VAF × 5
+> depth × ≥30 replicates + 3 spike backgrounds) is documented for a cluster run; both write the same
+> schema and the report regenerates identically.
+
+### 10.2 `SVCONF` — what each term is and **why** it is present (reviewer view)
+
+`SVCONF = clamp(Q + H + DJ − PENALTY, 0, 100)` (`.`/NA for WRAP/origin). Each term answers a specific
+failure mode, and each is demonstrated by a specific figure above:
+
+| Term | What it is | Why it is present | Shown by |
+|---|---|---|---|
+| **Q** evidence quality | `14·SRCONS + 10·min(SRSB/0.40,1) + 8·log1p(min(JR,20))/log1p(20)` | A true junction has size-consistent (`SRCONS`≈1), strand-balanced (`SRSB`≈0.5) split reads; homopolymer/mapping artifacts give inconsistent sizes and/or one-strand clips. `JR` is **log-saturated at 20** so ultra-high mtDNA depth cannot inflate confidence (depth-stability). | F4, F5 |
+| **H** heteroplasmy magnitude | `40·min(het/0.30, 1)`, `het=AFC` (else `AFJ`) | Confidence must **rise with heteroplasmy** (more mutant molecules ⇒ more believable), expressed as a depth-invariant **ratio** (not a count) and ceilinged at 30% so one term can't dominate. The central claim the LoD sweep validates. | F3, F6 |
+| **DJ** junction↔dosage agreement | `16·max(0, 1 − \|AFJ−AFC\|/max(AFJ,AFC))`, only with a corroborating coverage drop | A real deletion makes the junction VAF and the coverage-dosage AF **agree** (two orthogonal estimators of one molecular fraction); an artifact often has a junction with no proportional depth drop. **Relative-normalized** so it doesn't grow with het — the fix that keeps `SVCONF` monotone. | F3, F5 |
+| **PENALTY** fragile demotion | `−16 if nfragile≥1, −16 more if nfragile≥2` (DLOOP/HP/NUMT/WRAP) | Targets the **dominant real false positive** — low-VAF control-region homopolymer pseudo-deletions, which trip both DLOOP and HP (`nfragile=2` ⇒ full −32). The `HP_ARTIFACT` hard-negative panel is the evidence it earns its points. | F4, F5, F9a |
+
+`SVCONF` is a **ranking/confidence** score, orthogonal to heteroplasmy (`AF`) and to biological impact
+(`SVIMPACT`); its 0–100 value becomes a calibrated probability only through the F6 isotonic map. Weights
+are expert-set starting points to be re-tuned on the `--full` grid.
+
 ---
 
 ## 11. Known limitations (v1)
