@@ -37,12 +37,14 @@ def record(name, ok, detail=""):
     print("  %-26s %s  %s" % (name, "PASS" if ok else "FAIL", detail))
 
 
-def run_caller(sample, bam, prefix, mtlen=None, chrom=None):
-    env = dict(os.environ, HP_SDIR=SDIR, HP_RDIR=RDIR, HP_PYTHON=PYEXE)
-    if mtlen is not None:
-        env["HP_MTLEN"] = str(mtlen)
-    if chrom is not None:
-        env["HP_MT"] = chrom
+def run_caller(sample, bam, prefix, mtlen=16569, chrom="chrM"):
+    # Pin contig + length so the suite is HERMETIC w.r.t. any ambient HP_MT/HP_MTLEN. The committed
+    # BAMs are all chrM / 16569, but callSV.sh reads HP_MT to choose the contig AND its reference, so
+    # a stray HP_MT inherited from the environment (e.g. a Docker build RUN that exported HP_MT=RSRS
+    # for the reference-install loop) would make it fetch a non-existent contig and every call would
+    # error — exactly the all-checks-fail signature that masquerades as a caller regression.
+    env = dict(os.environ, HP_SDIR=SDIR, HP_RDIR=RDIR, HP_PYTHON=PYEXE,
+               HP_MT=chrom, HP_MTLEN=str(mtlen))
     p = subprocess.run(["bash", os.path.join(SDIR, "callSV.sh"), sample, bam, prefix],
                        env=env, capture_output=True, text=True)
     return p.returncode, p.stdout + p.stderr
