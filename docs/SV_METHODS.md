@@ -776,9 +776,10 @@ sensitivity with **Wilson** CIs; **LoD50/LoD95 per depth via both probit and log
 honestly as the raw reliability diagram + ECE/Brier **and** an **isotonic (PAVA) recalibration** on a
 held-out split (so the raw hand-weighted `SVCONF` is treated as a *ranking* score and only becomes a
 probability through the documented map); heteroplasmy accuracy as per-VAF bias + Bland-Altman (with the
-low-VAF `AFC`→0 censoring flagged). Nine figures: F1 LoD heatmap, F2 probit dose-response + LoD95, F3
+low-VAF `AFC`→0 censoring flagged, and the **empirical** PASS rate — not the near-separable model fit —
+as the primary LoD read-out). Eight figures: F1 LoD heatmap, F2 probit dose-response + LoD95, F3
 `SVCONF`-vs-VAF monotonicity/depth-overlap, F4 TP-vs-artifact separation, F5 ROC+PR, F6 calibration, F7
-Bland-Altman, F8 sim↔real concordance, F9 origin/non-repeat behaviour.
+Bland-Altman, F8 sim↔real concordance.
 
 > The committed `real/lod_sweep.tsv` + `real/lod_report/` come from the **`--quick`** grid (a tractable
 > multi-replicate run, regenerable in one command). The publication-grade **`--full`** grid (14 VAF × 5
@@ -795,7 +796,7 @@ failure mode, and each is demonstrated by a specific figure above:
 | **Q** evidence quality | `14·SRCONS + 10·min(SRSB/0.40,1) + 8·log1p(min(JR,20))/log1p(20)` | A true junction has size-consistent (`SRCONS`≈1), strand-balanced (`SRSB`≈0.5) split reads; homopolymer/mapping artifacts give inconsistent sizes and/or one-strand clips. `JR` is **log-saturated at 20** so ultra-high mtDNA depth cannot inflate confidence (depth-stability). | F4, F5 |
 | **H** heteroplasmy magnitude | `40·min(het/0.30, 1)`, `het=AFC` (else `AFJ`) | Confidence must **rise with heteroplasmy** (more mutant molecules ⇒ more believable), expressed as a depth-invariant **ratio** (not a count) and ceilinged at 30% so one term can't dominate. The central claim the LoD sweep validates. | F3, F6 |
 | **DJ** junction↔dosage agreement | `16·max(0, 1 − \|AFJ−AFC\|/max(AFJ,AFC))`, only with a corroborating coverage drop | A real deletion makes the junction VAF and the coverage-dosage AF **agree** (two orthogonal estimators of one molecular fraction); an artifact often has a junction with no proportional depth drop. **Relative-normalized** so it doesn't grow with het — the fix that keeps `SVCONF` monotone. | F3, F5 |
-| **PENALTY** fragile demotion | `−16 if nfragile≥1, −16 more if nfragile≥2` (DLOOP/HP/NUMT/WRAP) | Targets the **dominant real false positive** — low-VAF control-region homopolymer pseudo-deletions, which trip both DLOOP and HP (`nfragile=2` ⇒ full −32). The `HP_ARTIFACT` hard-negative panel is the evidence it earns its points. | F4, F5, F9a |
+| **PENALTY** fragile demotion | `−16 if nfragile≥1, −16 more if nfragile≥2` (DLOOP/HP/NUMT/WRAP) | Targets the **dominant real false positive** — low-VAF control-region homopolymer pseudo-deletions, which trip both DLOOP and HP (`nfragile=2` ⇒ full −32). The `HP_ARTIFACT` hard-negative panel is the evidence it earns its points (origin/WRAP calls are additionally forced to `SVCONF='.'`). | F4, F5 |
 
 `SVCONF` is a **ranking/confidence** score, orthogonal to heteroplasmy (`AF`) and to biological impact
 (`SVIMPACT`); its 0–100 value becomes a calibrated probability only through the F6 isotonic map. Weights

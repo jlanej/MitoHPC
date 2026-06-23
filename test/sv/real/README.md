@@ -29,8 +29,10 @@ and **REAL** (event spiked into the real 1000G WT backgrounds here) — plus a c
 self-contained offline report (9 figures): the LoD surface + probit LoD50/95, `SVCONF`-vs-VAF
 monotonicity, true-vs-artifact `SVCONF` separation, ROC/PR, calibration (raw + isotonic), Bland-Altman
 heteroplasmy accuracy, and sim↔real concordance. Committed data is the tractable `--quick` grid
-(`del4977` PASS LoD95 ≈ 6% sim / ~8% real at production depth; 0 PASS on negatives; artifact median
-`SVCONF` 9 vs true-del 42; AUPRC 0.97). Regenerate:
+(`del4977` PASS limit of detection ≈ **8% heteroplasmy** empirically, sim and real concordant — the
+parametric LoD fit is reported as supporting only, being unstable under the near-separable `--quick`
+dose-response; **0 PASS over 62** wild-type/origin negatives; artifact median `SVCONF` 9 vs true-del 42;
+AUPRC 0.97). Regenerate:
 ```bash
 HP_SDIR=../../scripts HP_RDIR=../../RefSeq python3 ../lod_sweep.py --quick   # ~1h; --full for the publication grid
 HP_SDIR=../../scripts HP_RDIR=../../RefSeq python3 ../lod_report.py          # needs numpy/scipy/matplotlib
