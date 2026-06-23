@@ -777,7 +777,9 @@ honestly as the raw reliability diagram + ECE/Brier **and** an **isotonic (PAVA)
 held-out split (so the raw hand-weighted `SVCONF` is treated as a *ranking* score and only becomes a
 probability through the documented map); heteroplasmy accuracy as per-VAF bias + Bland-Altman (with the
 low-VAF `AFC`→0 censoring flagged, and the **empirical** PASS rate — not the near-separable model fit —
-as the primary LoD read-out). Eight figures: F1 LoD heatmap, F2 probit dose-response + LoD95, F3
+as the primary LoD read-out). Eight figures, each with a plain-language caption: F1 LoD surface
+(**detection** rate *and* PASS rate over heteroplasmy × depth — detection extends below the PASS
+threshold), F2 probit/logistic dose-response + LoD95, F3
 `SVCONF`-vs-VAF monotonicity/depth-overlap, F4 TP-vs-artifact separation, F5 ROC+PR, F6 calibration, F7
 Bland-Altman, F8 sim↔real concordance.
 

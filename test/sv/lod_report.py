@@ -223,29 +223,35 @@ def main():
             out[v] = (k, len(sub))
         return out
 
-    # ---- F1 LoD heatmap (P(PASS) over VAF x depth, per variant) ----
+    # ---- Figure 1: dual LoD surface — DETECTION rate (top) and PASS rate (bottom) over VAF x depth ----
     try:
-        fig, axes = plt.subplots(1, len(variants), figsize=(5.2 * len(variants), 3.6), squeeze=False)
-        for ai, variant in enumerate(variants):
-            M = np.full((len(depths), len(vafs)), np.nan)
-            for di, d in enumerate(depths):
-                c = cell(variant, d, "passed")
-                for vi, v in enumerate(vafs):
-                    k, n = c[v]
-                    M[di, vi] = (k / n) if n else np.nan
-            ax = axes[0][ai]
-            im = ax.imshow(M, aspect="auto", cmap="viridis", vmin=0, vmax=1, origin="lower")
-            ax.set_xticks(range(len(vafs))); ax.set_xticklabels(["%g" % (v * 100) for v in vafs], rotation=45, fontsize=7)
-            ax.set_yticks(range(len(depths))); ax.set_yticklabels(depths, fontsize=8)
-            ax.set_xlabel("heteroplasmy (%)"); ax.set_ylabel("depth (x)")
-            ax.set_title("%s  P(PASS)" % variant, fontsize=10)
-            for di in range(len(depths)):
-                for vi in range(len(vafs)):
-                    if M[di, vi] == M[di, vi]:
-                        ax.text(vi, di, "%.0f" % (M[di, vi] * 100), ha="center", va="center",
-                                fontsize=6, color="white" if M[di, vi] < 0.6 else "black")
-        fig.colorbar(im, ax=axes[0].tolist(), shrink=0.8, label="P(PASS)")
-        fig.suptitle("F1 — LoD surface: PASS rate over heteroplasmy x depth (simulated)", fontsize=11)
+        metrics = [("detected", "detection rate  P(any junction call matches truth)"),
+                   ("passed", "PASS rate  P(call reaches FILTER=PASS)")]
+        fig, axes = plt.subplots(len(metrics), len(variants), figsize=(5.2 * len(variants), 3.4 * len(metrics)),
+                                 squeeze=False)
+        im = None
+        for mi, (metric, mlabel) in enumerate(metrics):
+            for ai, variant in enumerate(variants):
+                M = np.full((len(depths), len(vafs)), np.nan)
+                for di, d in enumerate(depths):
+                    c = cell(variant, d, metric)
+                    for vi, v in enumerate(vafs):
+                        k, n = c[v]
+                        M[di, vi] = (k / n) if n else np.nan
+                ax = axes[mi][ai]
+                im = ax.imshow(M, aspect="auto", cmap="viridis", vmin=0, vmax=1, origin="lower")
+                ax.set_xticks(range(len(vafs))); ax.set_xticklabels(["%g" % (v * 100) for v in vafs], rotation=45, fontsize=7)
+                ax.set_yticks(range(len(depths))); ax.set_yticklabels(depths, fontsize=8)
+                ax.set_xlabel("heteroplasmy (%)"); ax.set_ylabel("depth (×)")
+                ax.set_title("%s — %s" % (variant, metric), fontsize=9)
+                for di in range(len(depths)):
+                    for vi in range(len(vafs)):
+                        if M[di, vi] == M[di, vi]:
+                            ax.text(vi, di, "%.0f" % (M[di, vi] * 100), ha="center", va="center",
+                                    fontsize=6, color="white" if M[di, vi] < 0.6 else "black")
+        fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.6, label="fraction of replicates (%/100)")
+        fig.suptitle("Figure 1 — Limit-of-detection surface: detection rate (top) and PASS rate (bottom) "
+                     "vs heteroplasmy × depth (simulated)", fontsize=11)
         figs["F1_lod_heatmap"] = fig_to_b64(fig)
     except Exception as e:
         derived["F1_error"] = str(e)
@@ -324,7 +330,7 @@ def main():
                 ax.plot(xx * 100, 1 / (1 + np.exp(-(bl[0] + bl[1] * xx))), "--", color=cmap[di], lw=1, alpha=0.6)
         ax.axhline(0.95, color="grey", ls=":", lw=1); ax.text(max(vafs) * 100 * 0.7, 0.96, "95% detection", fontsize=7, color="grey")
         ax.set_xlabel("heteroplasmy (%)"); ax.set_ylabel("P(PASS)")
-        ax.set_title("F2 — %s PASS dose-response + LoD95 (probit solid, logistic dashed)" % vsel, fontsize=10)
+        ax.set_title("Figure 2 — %s PASS dose-response + LoD95 (probit solid, logistic dashed)" % vsel, fontsize=10)
         ax.legend(fontsize=7, loc="lower right"); ax.set_ylim(-0.03, 1.03)
         figs["F2_lod_probit"] = fig_to_b64(fig)
     except Exception as e:
@@ -353,7 +359,7 @@ def main():
             rho = stats.spearmanr([a for a, _ in allv], [b for _, b in allv]).correlation if len(allv) > 5 else float("nan")
             ax.set_title("%s  (Spearman rho=%.2f)" % (variant, rho), fontsize=10)
             ax.set_xlabel("true heteroplasmy (%)"); ax.set_ylabel("SVCONF"); ax.legend(fontsize=7); ax.set_ylim(0, 100)
-        fig.suptitle("F3 — SVCONF rises monotonically with heteroplasmy and overlaps across depth", fontsize=11)
+        fig.suptitle("Figure 3 — SVCONF rises monotonically with heteroplasmy and overlaps across depth", fontsize=11)
         figs["F3_svconf_monotonicity"] = fig_to_b64(fig)
     except Exception as e:
         derived["F3_error"] = str(e)
@@ -373,7 +379,7 @@ def main():
             parts = ax.violinplot(data, showmedians=True, showextrema=False)
             ax.set_xticks(range(1, len(labels) + 1)); ax.set_xticklabels(labels, fontsize=9)
             ax.set_ylabel("SVCONF"); ax.set_ylim(0, 100)
-            ax.set_title("F4 — SVCONF separates true del4977 from the control-region homopolymer artifact", fontsize=10)
+            ax.set_title("Figure 4 — SVCONF separates true del4977 from the control-region homopolymer artifact", fontsize=10)
             for i, g in enumerate(data):
                 ax.scatter(np.random.default_rng(i).normal(i + 1, 0.04, len(g)), g, s=6, alpha=0.3, color="k")
         figs["F4_tp_fp_separation"] = fig_to_b64(fig)
@@ -399,7 +405,7 @@ def main():
             a2.axhline(rp["prevalence"], color="grey", ls=":", lw=1, label="prevalence=%.2f" % rp["prevalence"])
             a2.set_xlabel("recall"); a2.set_ylabel("precision"); a2.set_ylim(0, 1.03)
             a2.set_title("PR (AUPRC=%.3f)" % rp["auprc"], fontsize=10); a2.legend(fontsize=7)
-            fig.suptitle("F5 — SVCONF ranking quality (TP vs detected artifact negatives)", fontsize=11)
+            fig.suptitle("Figure 5 — SVCONF ranking quality (TP vs detected artifact negatives)", fontsize=11)
             figs["F5_roc_pr"] = fig_to_b64(fig)
             derived["auroc"] = rp["auroc"]; derived["auprc"] = rp["auprc"]; derived["pr_prevalence"] = rp["prevalence"]
             # prevalence-honest operating point: the SVCONF threshold that maximizes MCC (separating
@@ -445,7 +451,7 @@ def main():
             if rows_cal:
                 ax.plot([c for c, _, _ in rows_cal], [a for _, a, _ in rows_cal], "-s", label="isotonic-recalibrated", color="#27ae60")
             ax.set_xlabel("predicted P(true)"); ax.set_ylabel("observed fraction true")
-            ax.set_title("F6 — calibration: raw ECE=%.2f Brier=%.2f -> isotonic ECE=%.2f"
+            ax.set_title("Figure 6 — calibration: raw ECE=%.2f Brier=%.2f -> isotonic ECE=%.2f"
                          % (ece_raw, brier_raw, ece_cal), fontsize=9)
             ax.legend(fontsize=8); ax.set_xlim(0, 1); ax.set_ylim(0, 1)
             figs["F6_calibration"] = fig_to_b64(fig)
@@ -470,7 +476,7 @@ def main():
                 ax.axhline(bias - 1.96 * sd, color="red", ls="--", lw=0.8)
                 ax.set_xlabel("mean(estimate, truth) %%"); ax.set_ylabel("%s - truth (%%)" % est.upper())
                 ax.set_title("%s  (n=%d)" % (est.upper(), len(pts)), fontsize=10); ax.legend(fontsize=7)
-        fig.suptitle("F7 — heteroplasmy accuracy (simulated; Bland-Altman, AFC primary): unbiased to ~3%. "
+        fig.suptitle("Figure 7 — heteroplasmy accuracy (simulated; Bland-Altman, AFC primary): unbiased to ~3%. "
                      "(In real backgrounds AFC censors low at low VAF as coverage noise masks the dosage drop.)", fontsize=9)
         figs["F7_heteroplasmy_accuracy"] = fig_to_b64(fig)
     except Exception as e:
@@ -495,7 +501,7 @@ def main():
                 lim = [min([x for x in xs + ys if x == x] + [0]), max([x for x in xs + ys if x == x] + [1])]
                 ax.plot(lim, lim, "k:", lw=1)
                 ax.set_xlabel("simulated"); ax.set_ylabel("real-spiked"); ax.set_title(lab, fontsize=10)
-            fig.suptitle("F8 — simulated vs real-1000G-spiked concordance (del4977)", fontsize=11)
+            fig.suptitle("Figure 8 — simulated vs real-1000G-spiked concordance (del4977)", fontsize=11)
             figs["F8_sim_vs_real"] = fig_to_b64(fig)
     except Exception as e:
         derived["F8_error"] = str(e)
@@ -525,21 +531,79 @@ SVCONF_BREAKDOWN = [
     ("Q — evidence quality", "14·SRCONS + 10·min(SRSB/0.40,1) + 8·log1p(min(JR,20))/log1p(20)",
      "A true junction has size-consistent (SRCONS~1), strand-balanced (SRSB~0.5) split reads; "
      "homopolymer/mapping artifacts give inconsistent sizes and/or one-strand clips. The JR count is "
-     "log-SATURATED at 20 so high mtDNA depth cannot inflate confidence (depth-stability).", "F4, F5"),
+     "log-SATURATED at 20 so high mtDNA depth cannot inflate confidence (depth-stability).", "Figures 4 &amp; 5"),
     ("H — heteroplasmy magnitude", "40·min(het/0.30, 1),  het = AFC if dosage-estimable else AFJ",
      "Confidence must RISE with heteroplasmy (more mutant molecules = more believable), expressed as a "
      "depth-invariant RATIO (AFC/AFJ are fractions) not a count, and ceilinged at 30% so one term cannot "
-     "dominate. This is the term the LoD sweep most directly validates.", "F3, F6"),
+     "dominate. This is the term the LoD sweep most directly validates.", "Figures 3 &amp; 6"),
     ("DJ — junction↔dosage agreement", "16·max(0, 1 − |AFJ−AFC|/max(AFJ,AFC)), only when a coverage drop corroborates",
      "A real deletion makes the junction VAF and the coverage-dosage AF agree (two orthogonal estimators "
      "of the same molecular fraction); an artifact often has a junction with no proportional depth drop. "
-     "RELATIVE-normalized so it does not grow with het — the fix that keeps SVCONF monotone (F3).", "F3, F5"),
+     "RELATIVE-normalized so it does not grow with het — the fix that keeps SVCONF monotone (Figure 3).", "Figures 3 &amp; 5"),
     ("PENALTY — fragile-region demotion", "−16 if nfragile≥1, −16 more if nfragile≥2 (DLOOP/HP/NUMT/WRAP at either breakpoint)",
      "Targets the DOMINANT real false positive: low-VAF control-region homopolymer pseudo-deletions, which "
      "trip BOTH DLOOP and HP (nfragile=2 → full −32). Without this term the artifact would score like a real "
      "call. The HP_ARTIFACT hard-negative panel is the evidence it earns its points (origin/WRAP calls "
-     "are additionally forced to SVCONF='.').", "F4, F5"),
+     "are additionally forced to SVCONF='.').", "Figures 4 &amp; 5"),
 ]
+
+
+# Plain-language caption under each figure — written so a reader needs no cross-reference to the methods.
+FIGURE_CAPTIONS = {
+    "F1_lod_heatmap":
+        "Each cell is the fraction of replicate simulations in which the deletion was <b>detected</b> "
+        "(top row: any junction call matching the true breakpoints) or reached <b>PASS</b> (bottom row: a "
+        "call the pipeline reports as a confident deletion), at a given heteroplasmy (x-axis) and sequencing "
+        "depth (y-axis); darker = higher rate, and the number in each cell is that percentage. Read up a "
+        "column to see how more depth lowers the threshold; the band where cells switch from light to dark is "
+        "the limit of detection (LoD). <b>Detection (top) reaches lower heteroplasmy than PASS (bottom)</b> "
+        "because a clean split-read junction flags a deletion before the stricter coverage-corroborated PASS "
+        "criterion is met — i.e. the caller 'sees' events below the level at which it will confidently report them.",
+    "F2_lod_probit":
+        "PASS probability as a function of heteroplasmy, one curve per depth. Dots are the observed per-cell "
+        "PASS rate with Wilson 95% confidence bars; the solid line is a probit fit and the dashed line a "
+        "logistic fit (shown together to confirm the estimate is not an artifact of one model). The dotted "
+        "horizontal line marks 95% detection — where it crosses a curve is that depth's LoD95. On this "
+        "(reduced) grid the response is nearly a step between 5% and 8% heteroplasmy, so the fitted numbers "
+        "are best read against the empirical dots rather than taken as exact (see Limitations).",
+    "F3_svconf_monotonicity":
+        "Median confidence score (SVCONF; shaded band = inter-quartile range across replicates) versus the "
+        "true spiked heteroplasmy, one line per depth. Two things should hold and do: the score "
+        "<b>rises monotonically</b> with heteroplasmy (more mutant molecules → more confidence), and the "
+        "per-depth lines <b>overlap</b> (the score is built from depth-invariant ratios, so it means the same "
+        "thing at 250× and 4000×). Spearman ρ near 1 in the panel titles quantifies the monotonic trend.",
+    "F4_tp_fp_separation":
+        "Distribution of the confidence score for genuine del4977 calls versus the control-region "
+        "homopolymer 'deletion' — the dominant false positive seen in real cohorts. The two clouds should be "
+        "well separated with the artifact pinned low, and they are (medians ≈42 vs ≈9). This is the direct "
+        "evidence that the fragile-region penalty demotes the artifact even though it is detected and clears "
+        "the basic filter — confidence, not the filter alone, is what suppresses it.",
+    "F5_roc_pr":
+        "How well the confidence score ranks true deletions above the artifact, swept across all thresholds. "
+        "Left: ROC (true-positive vs false-positive rate). Right: precision–recall, the more honest view when "
+        "negatives outnumber positives; the dotted line is the no-skill baseline (= the fraction of positives "
+        "in the set). Curves pulled toward the top-left (ROC) and top (PR), with area under PR above the "
+        "baseline, mean the score separates the two classes well at every operating point.",
+    "F6_calibration":
+        "Whether the score can be read as a probability. Points group calls into deciles of predicted "
+        "probability (score/100, and after an isotonic recalibration) and plot them against the observed "
+        "fraction that are truly real; the diagonal is perfect calibration. The <b>raw</b> score is a good "
+        "rank but sits off the diagonal (it under-states certainty → large calibration error); the "
+        "<b>recalibrated</b> curve hugs the diagonal — i.e. after the documented mapping, a value of 70 really "
+        "does mean ~70% likely true.",
+    "F7_heteroplasmy_accuracy":
+        "Accuracy of the reported mutant fraction (Bland–Altman agreement): for each call, the difference "
+        "(estimate − truth) against the average of the two; the solid red line is the mean bias and the dashed "
+        "lines the 95% limits of agreement. A bias near zero with tight limits means the estimate is "
+        "trustworthy. The coverage-dosage estimate AFC (primary) is essentially unbiased down to ~3% in "
+        "simulation; in real backgrounds it loses sensitivity at the very lowest fractions as coverage noise "
+        "masks the small dosage drop.",
+    "F8_sim_vs_real":
+        "Does the cheap simulated grid (which supplies the confidence intervals) predict behaviour in real "
+        "data? Each point is one heteroplasmy level: the simulated-arm value (x) against the real-1000G-spiked "
+        "value (y), for PASS rate, AFC and SVCONF. Points lying on the dotted identity line mean the two arms "
+        "agree — the simulation is a faithful stand-in, and the real arm is not contradicting it.",
+}
 
 
 def write_html(args, rows, figs, d, depths, vafs, variants):
@@ -559,7 +623,9 @@ def write_html(args, rows, figs, d, depths, vafs, variants):
            "border-bottom:2px solid #eee;padding-bottom:4px}img{max-width:100%;border:1px solid #eee;border-radius:6px}"
            "table{border-collapse:collapse;font-size:13px;margin:8px 0}td,th{border:1px solid #ddd;padding:5px 9px;"
            "text-align:left;vertical-align:top}th{background:#f6f6f6}.k{font-size:28px;font-weight:700;color:#0a6}"
-           ".muted{color:#777;font-size:12px}code{background:#f3f3f3;padding:1px 5px;border-radius:3px;font-size:12px}")
+           ".muted{color:#777;font-size:12px}code{background:#f3f3f3;padding:1px 5px;border-radius:3px;font-size:12px}"
+           "figure{margin:18px 0 26px}figcaption{font-size:12.5px;color:#3a3a3a;line-height:1.5;margin-top:7px;"
+           "padding:8px 11px;background:#fafafa;border-left:3px solid #0a6;border-radius:0 4px 4px 0}")
     H = ["<!doctype html><meta charset=utf-8><style>%s</style>" % css]
     H.append("<h1>MitoHPC SV caller — LoD &amp; accuracy evaluation</h1>")
     H.append("<p class=muted>Generated %s · %d caller runs · simulated + real-1000G-spiked arms · "
@@ -623,15 +689,21 @@ def write_html(args, rows, figs, d, depths, vafs, variants):
             H.append("<p>%s</p>" % note)
         for n in names:
             if n in figs:
-                H.append("<img src='data:image/png;base64,%s'>" % figs[n])
+                cap = FIGURE_CAPTIONS.get(n, "")
+                H.append("<figure><img src='data:image/png;base64,%s'>%s</figure>"
+                         % (figs[n], ("<figcaption>%s</figcaption>" % cap) if cap else ""))
             elif n + "_error" in d:
                 H.append("<p class=muted>[%s could not render: %s]</p>" % (n, d[n + "_error"]))
-    section("2. LoD surface (CLSI EP17-A2)", ["F1_lod_heatmap", "F2_lod_probit"],
-            "The empirical PASS rate (F1, per-cell with Wilson CIs) is the primary read-out; on this "
-            "<code>--quick</code> grid it localizes the PASS limit to ~8% heteroplasmy. The probit/logistic "
-            "fits (F2, in <code>lod_fits.tsv</code>) are shown for completeness but are unstable here because the "
-            "dose-response is near-separable — see §7. Detection-LoD sits below PASS-LoD by design (the "
-            "junction-strong J path detects below the depth-corroborated PASS threshold).")
+    section("2. Limit-of-detection surface — detection &amp; PASS rate (CLSI EP17-A2)",
+            ["F1_lod_heatmap", "F2_lod_probit"],
+            "<b>Detection rate</b> = the fraction of replicates in which the deletion's junction was found at "
+            "the right place; <b>PASS rate</b> = the fraction the pipeline reports as a confident call. We give "
+            "a surface for both (Figure 1) because they answer different questions — what the caller can SEE "
+            "vs what it will confidently REPORT — and detection reaches lower heteroplasmy than PASS by design. "
+            "The empirical per-cell rates (with Wilson 95% confidence intervals) are the primary read-out and "
+            "localize the PASS limit to ~8% heteroplasmy on this reduced grid; the probit/logistic dose-response "
+            "fits (Figure 2; numbers in <code>lod_fits.tsv</code>) are shown for completeness but are unstable "
+            "here because the response is near-separable, so we treat them as supporting only (see §7).")
     section("3. Heteroplasmy &amp; breakpoint accuracy", ["F7_heteroplasmy_accuracy"])
     section("4. SVCONF calibration &amp; defense (reviewer core)",
             ["F3_svconf_monotonicity", "F4_tp_fp_separation", "F5_roc_pr", "F6_calibration"])
@@ -644,7 +716,7 @@ def write_html(args, rows, figs, d, depths, vafs, variants):
     H.append("</table>")
     H.append("<p class=muted>SVCONF = clamp(Q + H + DJ − PENALTY, 0, 100); '.' (NA) for WRAP/origin calls. "
              "It is a RANKING/confidence score; the raw 0–100 value becomes a probability only through the "
-             "isotonic map in F6. Weights are expert-set starting points to be tuned on the full grid.</p>")
+             "isotonic map in Figure 6. Weights are expert-set starting points to be tuned on the full grid.</p>")
 
     # ---- limitations & next steps (honest scope) ----
     H.append("<h2>7. Limitations and next steps</h2>")
