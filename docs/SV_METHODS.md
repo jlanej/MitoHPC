@@ -781,11 +781,13 @@ as the primary LoD read-out), plus a **false-positive / precision** analysis —
 (precision, recall, FPR, F1, MCC) at the FILTER decision vs FILTER+`SVCONF`, showing the FILTER alone
 admits the control-region artifact (precision ≈0.83, FPR ≈0.73 against that hard negative) and the
 confidence gate recovers precision (≈0.91, FPR ≈0.34) while genuine wild-type yields **zero** calls.
-Nine figures, each with a plain-language caption: F1 LoD surface (**detection** rate *and* PASS rate
-over heteroplasmy × depth — detection extends below the PASS threshold), F2 probit/logistic dose-response
-+ LoD95, F3 `SVCONF`-vs-VAF monotonicity/depth-overlap, F4 TP-vs-artifact separation, F5 ROC+PR, F6
-calibration, F7 Bland-Altman, F8 sim↔real concordance, F9 control-region-artifact false-positive
-behaviour vs spike level. Per-cell rates with Wilson CIs are committed in `lod_cells.tsv`.
+Ten figures, **numbered in the order presented** and each carrying a plain-language caption (the number
+lives only in the caption, so reordering never desyncs the labels): the LoD surface (**detection** rate
+*and* PASS rate over heteroplasmy × depth — detection extends below the PASS threshold), the
+probit/logistic dose-response + LoD95, Bland-Altman heteroplasmy accuracy, the control-region-artifact
+false-positive behaviour vs spike level, `SVCONF`-vs-heteroplasmy monotonicity/depth-overlap, a direct
+true-deletion-vs-artifact confidence comparison (with IQR error bars), TP-vs-artifact separation, ROC+PR,
+calibration, and sim↔real concordance. Per-cell rates with Wilson CIs are committed in `lod_cells.tsv`.
 
 > The committed `real/lod_sweep.tsv` + `real/lod_report/` come from the **`--quick`** grid (a tractable
 > multi-replicate run, regenerable in one command). The publication-grade **`--full`** grid (14 VAF × 5

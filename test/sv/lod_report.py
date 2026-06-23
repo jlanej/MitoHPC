@@ -250,7 +250,7 @@ def main():
                             ax.text(vi, di, "%.0f" % (M[di, vi] * 100), ha="center", va="center",
                                     fontsize=6, color="white" if M[di, vi] < 0.6 else "black")
         fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.6, label="fraction of replicates (%/100)")
-        fig.suptitle("Figure 1 — Limit-of-detection surface: detection rate (top) and PASS rate (bottom) "
+        fig.suptitle("Limit-of-detection surface: detection rate (top) and PASS rate (bottom) "
                      "vs heteroplasmy × depth (simulated)", fontsize=11)
         figs["F1_lod_heatmap"] = fig_to_b64(fig)
     except Exception as e:
@@ -330,7 +330,7 @@ def main():
                 ax.plot(xx * 100, 1 / (1 + np.exp(-(bl[0] + bl[1] * xx))), "--", color=cmap[di], lw=1, alpha=0.6)
         ax.axhline(0.95, color="grey", ls=":", lw=1); ax.text(max(vafs) * 100 * 0.7, 0.96, "95% detection", fontsize=7, color="grey")
         ax.set_xlabel("heteroplasmy (%)"); ax.set_ylabel("P(PASS)")
-        ax.set_title("Figure 2 — %s PASS dose-response + LoD95 (probit solid, logistic dashed)" % vsel, fontsize=10)
+        ax.set_title("%s PASS dose-response + LoD95 (probit solid, logistic dashed)" % vsel, fontsize=10)
         ax.legend(fontsize=7, loc="lower right"); ax.set_ylim(-0.03, 1.03)
         figs["F2_lod_probit"] = fig_to_b64(fig)
     except Exception as e:
@@ -359,10 +359,39 @@ def main():
             rho = stats.spearmanr([a for a, _ in allv], [b for _, b in allv]).correlation if len(allv) > 5 else float("nan")
             ax.set_title("%s  (Spearman rho=%.2f)" % (variant, rho), fontsize=10)
             ax.set_xlabel("true heteroplasmy (%)"); ax.set_ylabel("SVCONF"); ax.legend(fontsize=7); ax.set_ylim(0, 100)
-        fig.suptitle("Figure 3 — SVCONF rises monotonically with heteroplasmy and overlaps across depth", fontsize=11)
+        fig.suptitle("SVCONF rises monotonically with heteroplasmy and overlaps across depth", fontsize=11)
         figs["F3_svconf_monotonicity"] = fig_to_b64(fig)
     except Exception as e:
         derived["F3_error"] = str(e)
+
+    # ---- artifact vs true-deletion SVCONF on the SAME heteroplasmy axis (the confidence MARGIN) ----
+    try:
+        def by_level(pred):
+            lv = sorted({fnum(r["target_vaf"]) for r in rows if pred(r) and (fnum(r["target_vaf"]) or 0) > 0})
+            med, lo, hi = [], [], []
+            for v in lv:
+                sc = [fnum(r["svconf"]) for r in rows if pred(r) and abs((fnum(r["target_vaf"]) or 0) - v) < 1e-6
+                      and fnum(r["svconf"]) is not None]
+                med.append(np.median(sc) if sc else np.nan)
+                lo.append(np.percentile(sc, 25) if sc else np.nan); hi.append(np.percentile(sc, 75) if sc else np.nan)
+            return [v * 100 for v in lv], np.array(med), np.array(lo), np.array(hi)
+        x_t, m_t, l_t, h_t = by_level(lambda r: r["del_variant"] == "del4977" and r["arm"] == "SIM"
+                                      and r["matched_to_truth"] == "1")
+        x_a, m_a, l_a, h_a = by_level(lambda r: r["del_variant"] == "HP_ARTIFACT" and r["matched_to_truth"] == "1")
+        fig, ax = plt.subplots(figsize=(6.6, 4.4))
+        ax.errorbar(x_t, m_t, yerr=[m_t - l_t, h_t - m_t], fmt="-o", color="#1a7f37", capsize=3,
+                    label="true del4977 (median, IQR)")
+        ax.errorbar(x_a, m_a, yerr=[m_a - l_a, h_a - m_a], fmt="-s", color="#c0392b", capsize=3,
+                    label="control-region artifact (median, IQR)")
+        thr0 = derived.get("best_mcc_thr") or 24
+        ax.axhline(thr0, color="grey", ls="--", lw=1); ax.text(max(x_t + x_a) * 0.62, thr0 + 1.5,
+                                                               "SVCONF gate ≥%.0f" % thr0, fontsize=7, color="grey")
+        ax.set_xlabel("heteroplasmy / artifact spike level (%)"); ax.set_ylabel("SVCONF"); ax.set_ylim(0, 100)
+        ax.set_title("Confidence vs level: a true deletion sits above the artifact at every level", fontsize=10)
+        ax.legend(fontsize=8)
+        figs["FA_artifact_vs_true"] = fig_to_b64(fig)
+    except Exception as e:
+        derived["FA_error"] = str(e)
 
     # ---- F4 TP vs FP SVCONF separation ----
     try:
@@ -379,7 +408,7 @@ def main():
             parts = ax.violinplot(data, showmedians=True, showextrema=False)
             ax.set_xticks(range(1, len(labels) + 1)); ax.set_xticklabels(labels, fontsize=9)
             ax.set_ylabel("SVCONF"); ax.set_ylim(0, 100)
-            ax.set_title("Figure 4 — SVCONF separates true del4977 from the control-region homopolymer artifact", fontsize=10)
+            ax.set_title("SVCONF separates true del4977 from the control-region homopolymer artifact", fontsize=10)
             for i, g in enumerate(data):
                 ax.scatter(np.random.default_rng(i).normal(i + 1, 0.04, len(g)), g, s=6, alpha=0.3, color="k")
         figs["F4_tp_fp_separation"] = fig_to_b64(fig)
@@ -405,7 +434,7 @@ def main():
             a2.axhline(rp["prevalence"], color="grey", ls=":", lw=1, label="prevalence=%.2f" % rp["prevalence"])
             a2.set_xlabel("recall"); a2.set_ylabel("precision"); a2.set_ylim(0, 1.03)
             a2.set_title("PR (AUPRC=%.3f)" % rp["auprc"], fontsize=10); a2.legend(fontsize=7)
-            fig.suptitle("Figure 5 — SVCONF ranking quality (TP vs detected artifact negatives)", fontsize=11)
+            fig.suptitle("SVCONF ranking quality (TP vs detected artifact negatives)", fontsize=11)
             figs["F5_roc_pr"] = fig_to_b64(fig)
             derived["auroc"] = rp["auroc"]; derived["auprc"] = rp["auprc"]; derived["pr_prevalence"] = rp["prevalence"]
             # prevalence-honest operating point: the SVCONF threshold that maximizes MCC (separating
@@ -451,7 +480,7 @@ def main():
             if rows_cal:
                 ax.plot([c for c, _, _ in rows_cal], [a for _, a, _ in rows_cal], "-s", label="isotonic-recalibrated", color="#27ae60")
             ax.set_xlabel("predicted P(true)"); ax.set_ylabel("observed fraction true")
-            ax.set_title("Figure 6 — calibration: raw ECE=%.2f Brier=%.2f -> isotonic ECE=%.2f"
+            ax.set_title("calibration: raw ECE=%.2f Brier=%.2f -> isotonic ECE=%.2f"
                          % (ece_raw, brier_raw, ece_cal), fontsize=9)
             ax.legend(fontsize=8); ax.set_xlim(0, 1); ax.set_ylim(0, 1)
             figs["F6_calibration"] = fig_to_b64(fig)
@@ -476,7 +505,7 @@ def main():
                 ax.axhline(bias - 1.96 * sd, color="red", ls="--", lw=0.8)
                 ax.set_xlabel("mean(estimate, truth) %%"); ax.set_ylabel("%s - truth (%%)" % est.upper())
                 ax.set_title("%s  (n=%d)" % (est.upper(), len(pts)), fontsize=10); ax.legend(fontsize=7)
-        fig.suptitle("Figure 7 — heteroplasmy accuracy (simulated; Bland-Altman, AFC primary): unbiased to ~3%. "
+        fig.suptitle("heteroplasmy accuracy (simulated; Bland-Altman, AFC primary): unbiased to ~3%. "
                      "(In real backgrounds AFC censors low at low VAF as coverage noise masks the dosage drop.)", fontsize=9)
         figs["F7_heteroplasmy_accuracy"] = fig_to_b64(fig)
     except Exception as e:
@@ -501,7 +530,7 @@ def main():
                 lim = [min([x for x in xs + ys if x == x] + [0]), max([x for x in xs + ys if x == x] + [1])]
                 ax.plot(lim, lim, "k:", lw=1)
                 ax.set_xlabel("simulated"); ax.set_ylabel("real-spiked"); ax.set_title(lab, fontsize=10)
-            fig.suptitle("Figure 8 — simulated vs real-1000G-spiked concordance (del4977)", fontsize=11)
+            fig.suptitle("simulated vs real-1000G-spiked concordance (del4977)", fontsize=11)
             figs["F8_sim_vs_real"] = fig_to_b64(fig)
     except Exception as e:
         derived["F8_error"] = str(e)
@@ -566,26 +595,30 @@ def main():
     derived["cm_svconf"] = confusion(thr)
     derived["cm_thr"] = thr
 
-    # ---- Figure 9: false-positive behaviour of the control-region artifact vs its spike level ----
+    # ---- false-positive behaviour of the control-region artifact vs its spike level ----
     try:
         levels = sorted({fnum(r["target_vaf"]) for r in artneg if fnum(r["target_vaf"])})
         det = [np.mean([int(r["detected"]) for r in artneg if abs(fnum(r["target_vaf"]) - v) < 1e-6]) for v in levels]
         pas = [np.mean([int(r["passed"]) for r in artneg if abs(fnum(r["target_vaf"]) - v) < 1e-6]) for v in levels]
-        scv = [np.median([fnum(r["svconf"]) for r in artneg if abs(fnum(r["target_vaf"]) - v) < 1e-6
-                          and fnum(r["svconf"]) is not None] or [np.nan]) for v in levels]
+        scv, slo, shi = [], [], []   # median SVCONF + IQR error bars per level
+        for v in levels:
+            sc = [fnum(r["svconf"]) for r in artneg if abs(fnum(r["target_vaf"]) - v) < 1e-6
+                  and fnum(r["svconf"]) is not None]
+            scv.append(np.median(sc) if sc else np.nan)
+            slo.append(np.percentile(sc, 25) if sc else np.nan); shi.append(np.percentile(sc, 75) if sc else np.nan)
         fig, (a1, a2) = plt.subplots(1, 2, figsize=(10.5, 4.0))
         xl = [v * 100 for v in levels]
         a1.plot(xl, [x * 100 for x in det], "-o", color="#777", label="detected (junction found)")
         a1.plot(xl, [x * 100 for x in pas], "-s", color="#c0392b", label="PASS (FILTER alone)")
         a1.set_xlabel("artifact spike level (% of molecules)"); a1.set_ylabel("rate (%)"); a1.set_ylim(-3, 103)
-        a1.set_title("Control-region artifact: detection & FILTER-PASS", fontsize=10); a1.legend(fontsize=8)
-        a2.plot(xl, scv, "-o", color="#2980b9")
+        a1.set_title("artifact detection & FILTER-PASS rate", fontsize=10); a1.legend(fontsize=8)
+        yerr = np.array([[max(0, m - lo) for m, lo in zip(scv, slo)], [max(0, hi - m) for m, hi in zip(scv, shi)]])
+        a2.errorbar(xl, scv, yerr=yerr, fmt="-o", color="#2980b9", capsize=3, label="artifact SVCONF (median, IQR)")
         a2.axhline(thr, color="green", ls="--", lw=1, label="SVCONF gate (≥%.0f)" % thr)
         a2.axhspan(0, thr, color="green", alpha=0.06)
-        a2.set_xlabel("artifact spike level (% of molecules)"); a2.set_ylabel("median SVCONF"); a2.set_ylim(0, 100)
-        a2.set_title("…but SVCONF demotes it (low until implausibly high levels)", fontsize=10); a2.legend(fontsize=8)
-        fig.suptitle("Figure 9 — When do we call 'garbage'? The control-region artifact is always detected and "
-                     "PASSes the basic filter once ≥5%, but SVCONF keeps it low-confidence", fontsize=10)
+        a2.set_xlabel("artifact spike level (% of molecules)"); a2.set_ylabel("SVCONF"); a2.set_ylim(0, 100)
+        a2.set_title("artifact confidence score vs spike level", fontsize=10); a2.legend(fontsize=8)
+        fig.suptitle("Control-region artifact: detection, FILTER-PASS, and confidence vs spike level", fontsize=11)
         figs["F9_false_positives"] = fig_to_b64(fig)
     except Exception as e:
         derived["F9_error"] = str(e)
@@ -599,20 +632,23 @@ SVCONF_BREAKDOWN = [
     ("Q — evidence quality", "14·SRCONS + 10·min(SRSB/0.40,1) + 8·log1p(min(JR,20))/log1p(20)",
      "A true junction has size-consistent (SRCONS~1), strand-balanced (SRSB~0.5) split reads; "
      "homopolymer/mapping artifacts give inconsistent sizes and/or one-strand clips. The JR count is "
-     "log-SATURATED at 20 so high mtDNA depth cannot inflate confidence (depth-stability).", "Figures 4 &amp; 5"),
+     "log-SATURATED at 20 so high mtDNA depth cannot inflate confidence (depth-stability).",
+     "Figs {{F4_tp_fp_separation}} &amp; {{F5_roc_pr}}"),
     ("H — heteroplasmy magnitude", "40·min(het/0.30, 1),  het = AFC if dosage-estimable else AFJ",
      "Confidence must RISE with heteroplasmy (more mutant molecules = more believable), expressed as a "
      "depth-invariant RATIO (AFC/AFJ are fractions) not a count, and ceilinged at 30% so one term cannot "
-     "dominate. This is the term the LoD sweep most directly validates.", "Figures 3 &amp; 6"),
+     "dominate. This is the term the LoD sweep most directly validates.",
+     "Figs {{F3_svconf_monotonicity}} &amp; {{F6_calibration}}"),
     ("DJ — junction↔dosage agreement", "16·max(0, 1 − |AFJ−AFC|/max(AFJ,AFC)), only when a coverage drop corroborates",
      "A real deletion makes the junction VAF and the coverage-dosage AF agree (two orthogonal estimators "
      "of the same molecular fraction); an artifact often has a junction with no proportional depth drop. "
-     "RELATIVE-normalized so it does not grow with het — the fix that keeps SVCONF monotone (Figure 3).", "Figures 3 &amp; 5"),
+     "RELATIVE-normalized so it does not grow with het — the fix that keeps SVCONF monotone "
+     "(Figure {{F3_svconf_monotonicity}}).", "Figs {{F3_svconf_monotonicity}} &amp; {{F5_roc_pr}}"),
     ("PENALTY — fragile-region demotion", "−16 if nfragile≥1, −16 more if nfragile≥2 (DLOOP/HP/NUMT/WRAP at either breakpoint)",
      "Targets the DOMINANT real false positive: low-VAF control-region homopolymer pseudo-deletions, which "
      "trip BOTH DLOOP and HP (nfragile=2 → full −32). Without this term the artifact would score like a real "
      "call. The HP_ARTIFACT hard-negative panel is the evidence it earns its points (origin/WRAP calls "
-     "are additionally forced to SVCONF='.').", "Figures 4 &amp; 5"),
+     "are additionally forced to SVCONF='.').", "Figs {{F4_tp_fp_separation}} &amp; {{F5_roc_pr}}"),
 ]
 
 
@@ -672,14 +708,31 @@ FIGURE_CAPTIONS = {
         "value (y), for PASS rate, AFC and SVCONF. Points lying on the dotted identity line mean the two arms "
         "agree — the simulation is a faithful stand-in, and the real arm is not contradicting it.",
     "F9_false_positives":
-        "Where do false positives come from? On genuine wild-type the caller emits nothing, so the only "
-        "adversarial negative is a deletion deliberately placed in the control-region homopolymer tract — the "
-        "class that dominates real cohorts. <b>Left:</b> it is always detected, and once it reaches ~5% it "
-        "PASSes the basic FILTER (red) just like a real deletion would. <b>Right:</b> its confidence score "
-        "stays in the green (rejected) zone until an implausibly high level (≥20%, which biologically cannot "
-        "exist because such a deletion removes the replication origin). So the FILTER alone admits this "
-        "artifact, and the confidence gate is what removes it — the quantitative cleanup is in the table above.",
+        "Behaviour of the control-region homopolymer artifact as a function of its spike level (on genuine "
+        "wild-type the caller emits nothing, so this injected artifact is the only adversarial negative). "
+        "<b>Left:</b> it is always detected, and its FILTER-PASS rate rises with level — once it reaches ~5% "
+        "it PASSes the basic FILTER like a real deletion. <b>Right:</b> its confidence score (median, IQR "
+        "error bars) against the same level; the dashed line and shaded band mark the SVCONF gate used in the "
+        "table above. The point is descriptive: the FILTER alone admits this artifact, and the confidence "
+        "score is the orthogonal axis on which it can be separated.",
+    "FA_artifact_vs_true":
+        "The confidence margin, drawn directly: median SVCONF (with inter-quartile error bars) for a genuine "
+        "del4977 and for the control-region artifact, plotted against the same heteroplasmy / spike axis. At "
+        "every level the true deletion sits above the artifact; the dashed line is the SVCONF gate. This is "
+        "the per-level companion to the pooled distributions in the separation figure.",
 }
+
+
+# Figures are NUMBERED by the order they are PRESENTED (not the order they are generated), so "Figure N"
+# is always sequential in the report. The number lives only in the HTML caption / cross-references — the
+# plot titles carry no number — so reordering a section never desyncs the labels. Prose refers to a figure
+# with the placeholder {{key}}, resolved to its number at the end of write_html.
+PRESENTATION_ORDER = [
+    "F1_lod_heatmap", "F2_lod_probit", "F7_heteroplasmy_accuracy", "F9_false_positives",
+    "F3_svconf_monotonicity", "FA_artifact_vs_true", "F4_tp_fp_separation", "F5_roc_pr",
+    "F6_calibration", "F8_sim_vs_real",
+]
+FIGNUM = {k: i + 1 for i, k in enumerate(PRESENTATION_ORDER)}
 
 
 def write_html(args, rows, figs, d, depths, vafs, variants):
@@ -769,29 +822,34 @@ def write_html(args, rows, figs, d, depths, vafs, variants):
                 num(cms.get("prec"), "%.2f"), num(cms.get("fpr"), "%.2f")))
     H.append("</table>")
 
+    def render_fig(n):
+        if n in figs:
+            num_ = FIGNUM.get(n, "?")
+            cap = "<b>Figure %s.</b> %s" % (num_, FIGURE_CAPTIONS.get(n, ""))
+            H.append("<figure><img src='data:image/png;base64,%s'><figcaption>%s</figcaption></figure>"
+                     % (figs[n], cap))
+        elif n + "_error" in d:
+            H.append("<p class=muted>[Figure %s could not render: %s]</p>" % (FIGNUM.get(n, "?"), d[n + "_error"]))
+
     def section(title, names, note=""):
         H.append("<h2>%s</h2>" % title)
         if note:
             H.append("<p>%s</p>" % note)
         for n in names:
-            if n in figs:
-                cap = FIGURE_CAPTIONS.get(n, "")
-                H.append("<figure><img src='data:image/png;base64,%s'>%s</figure>"
-                         % (figs[n], ("<figcaption>%s</figcaption>" % cap) if cap else ""))
-            elif n + "_error" in d:
-                H.append("<p class=muted>[%s could not render: %s]</p>" % (n, d[n + "_error"]))
+            render_fig(n)
     section("2. Limit-of-detection surface — detection &amp; PASS rate (CLSI EP17-A2)",
             ["F1_lod_heatmap", "F2_lod_probit"],
             "<b>Detection rate</b> = the fraction of replicates in which the deletion's junction was found at "
             "the right place; <b>PASS rate</b> = the fraction the pipeline reports as a confident call. We give "
-            "a surface for both (Figure 1) because they answer different questions — what the caller can SEE "
-            "vs what it will confidently REPORT — and detection reaches lower heteroplasmy than PASS by design. "
-            "The empirical per-cell rates are the primary read-out and localize the PASS limit to ~8% "
-            "heteroplasmy on this reduced grid; <b>Figure 1 shows the point estimates</b>, and their <b>Wilson "
-            "95% confidence intervals are drawn as the error bars in Figure 2</b> and tabulated per cell in "
-            "<code>lod_cells.tsv</code>. The probit/logistic dose-response fits (Figure 2; numbers in "
-            "<code>lod_fits.tsv</code>) are shown for completeness but are unstable here because the response is "
-            "near-separable, so we treat them as supporting only (see §8).")
+            "a surface for both (Figure {{F1_lod_heatmap}}) because they answer different questions — what the "
+            "caller can SEE vs what it will confidently REPORT — and detection reaches lower heteroplasmy than "
+            "PASS by design. The empirical per-cell rates are the primary read-out and localize the PASS limit "
+            "to ~8% heteroplasmy on this reduced grid; <b>Figure {{F1_lod_heatmap}} shows the point estimates</b>, "
+            "and their <b>Wilson 95% confidence intervals are drawn as the error bars in "
+            "Figure {{F2_lod_probit}}</b> and tabulated per cell in <code>lod_cells.tsv</code>. The "
+            "probit/logistic dose-response fits (Figure {{F2_lod_probit}}; numbers in <code>lod_fits.tsv</code>) "
+            "are shown for completeness but are unstable here because the response is near-separable, so we treat "
+            "them as supporting only (see §8).")
     section("3. Heteroplasmy accuracy", ["F7_heteroplasmy_accuracy"])
 
     # ---- section 4: false positives & precision (confusion matrix + the FP figure) ----
@@ -822,13 +880,10 @@ def write_html(args, rows, figs, d, depths, vafs, variants):
              "and is 0 against genuine wild-type.</p>"
              % (num(cmf.get("fpr"), "%.2f"), num(cmf.get("prec"), "%.2f"), num(cms.get("prec"), "%.2f"),
                 num(cmf.get("fpr"), "%.2f"), num(cms.get("fpr"), "%.2f"), num(cms.get("rec_lod"), "%.2f")))
-    for n in ["F9_false_positives"]:
-        if n in figs:
-            H.append("<figure><img src='data:image/png;base64,%s'><figcaption>%s</figcaption></figure>"
-                     % (figs[n], FIGURE_CAPTIONS.get(n, "")))
+    render_fig("F9_false_positives")
 
     section("5. Confidence score (SVCONF): calibration &amp; artifact separation",
-            ["F3_svconf_monotonicity", "F4_tp_fp_separation", "F5_roc_pr", "F6_calibration"])
+            ["F3_svconf_monotonicity", "FA_artifact_vs_true", "F4_tp_fp_separation", "F5_roc_pr", "F6_calibration"])
     section("6. Generalization: simulated vs real", ["F8_sim_vs_real"])
 
     H.append("<h2>7. Confidence score (SVCONF): what each term is and why it is present</h2>")
@@ -838,7 +893,8 @@ def write_html(args, rows, figs, d, depths, vafs, variants):
     H.append("</table>")
     H.append("<p class=muted>SVCONF = clamp(Q + H + DJ − PENALTY, 0, 100); '.' (NA) for WRAP/origin calls. "
              "It is a RANKING/confidence score; the raw 0–100 value becomes a probability only through the "
-             "isotonic map in Figure 6. Weights are expert-set starting points to be tuned on the full grid.</p>")
+             "isotonic map in Figure {{F6_calibration}}. Weights are expert-set starting points to be tuned on "
+             "the full grid.</p>")
 
     # ---- limitations & next steps (honest scope) ----
     H.append("<h2>8. Limitations and next steps</h2>")
@@ -869,7 +925,10 @@ def write_html(args, rows, figs, d, depths, vafs, variants):
         "emerged mainly at full (8–22k&times;) depth; this grid caps at 4000&times;. <i>Next:</i> add a "
         "high-depth negative panel to confirm the fragile penalty holds where the artifact is strongest.</li>"
         "</ul>")
-    open(os.path.join(args.outdir, "index.html"), "w").write("\n".join(H))
+    html = "\n".join(H)
+    for k, n in FIGNUM.items():            # resolve {{figure-key}} placeholders to presentation numbers
+        html = html.replace("{{%s}}" % k, str(n))
+    open(os.path.join(args.outdir, "index.html"), "w").write(html)
 
 
 if __name__ == "__main__":
