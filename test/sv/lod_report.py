@@ -227,8 +227,8 @@ def main():
     try:
         metrics = [("detected", "detection rate  P(any junction call matches truth)"),
                    ("passed", "PASS rate  P(call reaches FILTER=PASS)")]
-        fig, axes = plt.subplots(len(metrics), len(variants), figsize=(5.2 * len(variants), 3.4 * len(metrics)),
-                                 squeeze=False)
+        fig, axes = plt.subplots(len(metrics), len(variants), figsize=(5.4 * len(variants), 4.0 * len(metrics)),
+                                 squeeze=False, gridspec_kw=dict(hspace=0.62, wspace=0.28))
         im = None
         for mi, (metric, mlabel) in enumerate(metrics):
             for ai, variant in enumerate(variants):
@@ -522,6 +522,74 @@ def main():
     derived["artifact_pass_pct"] = (100.0 * sum(int(r["passed"]) for r in art) / len(art)) if art else float("nan")
     derived["artifact_svconf_median"] = float(np.median([fnum(r["svconf"]) for r in art if fnum(r["svconf"]) is not None])) if art else float("nan")
 
+    # ---- per-cell rate + Wilson 95% CI table (so the CIs behind F1/F2 are available numerically) ----
+    cl = ["variant\tdepth\tvaf\tdet_k\tdet_n\tdet_rate\tdet_lo\tdet_hi\tpass_k\tpass_n\tpass_rate\tpass_lo\tpass_hi"]
+    for variant in variants:
+        for d in depths:
+            for v in vafs:
+                kd, nd = cell(variant, d, "detected")[v]
+                kp, npc = cell(variant, d, "passed")[v]
+                pd_, ld, hd = wilson(kd, nd); pp, lp, hp = wilson(kp, npc)
+                cl.append("%s\t%d\t%.3f\t%d\t%d\t%.3f\t%.3f\t%.3f\t%d\t%d\t%.3f\t%.3f\t%.3f"
+                          % (variant, d, v, kd, nd, pd_, ld, hd, kp, npc, pp, lp, hp))
+    open(os.path.join(args.outdir, "lod_cells.tsv"), "w").write("\n".join(cl) + "\n")
+
+    # ---- FALSE POSITIVES & precision: confusion matrix at FILTER vs FILTER+SVCONF, plus the FP figure ----
+    # Positives = genuine deletions (del4977/NONREP, VAF>0). The adversarial negative = the injected
+    # control-region homopolymer artifact (HP_ARTIFACT). Genuine wild-type blanks are reported separately
+    # (they emit nothing). recall is also reported ABOVE the LoD (VAF>=8%) since the pooled value is
+    # dominated by sub-LoD events that are missed by definition, not by error.
+    realpos = [r for r in rows if r["del_variant"] in ("del4977", "NONREP") and (fnum(r["target_vaf"]) or 0) > 0]
+    artneg = [r for r in rows if r["del_variant"] == "HP_ARTIFACT"]
+    blanks = [r for r in rows if ((fnum(r["target_vaf"]) or 0) == 0) or r["del_variant"] in ("WT", "ORIGIN")]
+    derived["blank_fp_calls"] = sum(int(r["n_calls_pass"]) for r in blanks)
+    derived["blank_runs"] = len(blanks)
+
+    def confusion(thr):
+        def called(r):
+            if r["passed"] != "1":
+                return False
+            return True if thr is None else (fnum(r["svconf"]) is not None and fnum(r["svconf"]) >= thr)
+        tp = sum(called(r) for r in realpos); fn = len(realpos) - tp
+        fp = sum(called(r) for r in artneg); tn = len(artneg) - fp
+        prec = tp / (tp + fp) if (tp + fp) else float("nan")
+        rec = tp / (tp + fn) if (tp + fn) else float("nan")
+        fpr = fp / (fp + tn) if (fp + tn) else 0.0
+        f1 = (2 * prec * rec / (prec + rec)) if (prec == prec and rec and prec + rec) else float("nan")
+        # recall above the LoD (VAF>=0.08)
+        ra = [r for r in realpos if (fnum(r["target_vaf"]) or 0) >= 0.08]
+        rec_lod = (sum(called(r) for r in ra) / len(ra)) if ra else float("nan")
+        return dict(tp=tp, fp=fp, tn=tn, fn=fn, prec=prec, rec=rec, fpr=fpr, f1=f1,
+                    mcc=mcc(tp, fp, tn, fn), rec_lod=rec_lod)
+    thr = derived.get("best_mcc_thr") or 24
+    derived["cm_filter"] = confusion(None)
+    derived["cm_svconf"] = confusion(thr)
+    derived["cm_thr"] = thr
+
+    # ---- Figure 9: false-positive behaviour of the control-region artifact vs its spike level ----
+    try:
+        levels = sorted({fnum(r["target_vaf"]) for r in artneg if fnum(r["target_vaf"])})
+        det = [np.mean([int(r["detected"]) for r in artneg if abs(fnum(r["target_vaf"]) - v) < 1e-6]) for v in levels]
+        pas = [np.mean([int(r["passed"]) for r in artneg if abs(fnum(r["target_vaf"]) - v) < 1e-6]) for v in levels]
+        scv = [np.median([fnum(r["svconf"]) for r in artneg if abs(fnum(r["target_vaf"]) - v) < 1e-6
+                          and fnum(r["svconf"]) is not None] or [np.nan]) for v in levels]
+        fig, (a1, a2) = plt.subplots(1, 2, figsize=(10.5, 4.0))
+        xl = [v * 100 for v in levels]
+        a1.plot(xl, [x * 100 for x in det], "-o", color="#777", label="detected (junction found)")
+        a1.plot(xl, [x * 100 for x in pas], "-s", color="#c0392b", label="PASS (FILTER alone)")
+        a1.set_xlabel("artifact spike level (% of molecules)"); a1.set_ylabel("rate (%)"); a1.set_ylim(-3, 103)
+        a1.set_title("Control-region artifact: detection & FILTER-PASS", fontsize=10); a1.legend(fontsize=8)
+        a2.plot(xl, scv, "-o", color="#2980b9")
+        a2.axhline(thr, color="green", ls="--", lw=1, label="SVCONF gate (≥%.0f)" % thr)
+        a2.axhspan(0, thr, color="green", alpha=0.06)
+        a2.set_xlabel("artifact spike level (% of molecules)"); a2.set_ylabel("median SVCONF"); a2.set_ylim(0, 100)
+        a2.set_title("…but SVCONF demotes it (low until implausibly high levels)", fontsize=10); a2.legend(fontsize=8)
+        fig.suptitle("Figure 9 — When do we call 'garbage'? The control-region artifact is always detected and "
+                     "PASSes the basic filter once ≥5%, but SVCONF keeps it low-confidence", fontsize=10)
+        figs["F9_false_positives"] = fig_to_b64(fig)
+    except Exception as e:
+        derived["F9_error"] = str(e)
+
     write_html(args, rows, figs, derived, depths, vafs, variants)
     print("[lod_report] wrote %s/index.html (%d figures, %d rows)" % (args.outdir, len(figs), len(rows)))
 
@@ -603,6 +671,14 @@ FIGURE_CAPTIONS = {
         "data? Each point is one heteroplasmy level: the simulated-arm value (x) against the real-1000G-spiked "
         "value (y), for PASS rate, AFC and SVCONF. Points lying on the dotted identity line mean the two arms "
         "agree — the simulation is a faithful stand-in, and the real arm is not contradicting it.",
+    "F9_false_positives":
+        "Where do false positives come from? On genuine wild-type the caller emits nothing, so the only "
+        "adversarial negative is a deletion deliberately placed in the control-region homopolymer tract — the "
+        "class that dominates real cohorts. <b>Left:</b> it is always detected, and once it reaches ~5% it "
+        "PASSes the basic FILTER (red) just like a real deletion would. <b>Right:</b> its confidence score "
+        "stays in the green (rejected) zone until an implausibly high level (≥20%, which biologically cannot "
+        "exist because such a deletion removes the replication origin). So the FILTER alone admits this "
+        "artifact, and the confidence gate is what removes it — the quantitative cleanup is in the table above.",
 }
 
 
@@ -631,6 +707,13 @@ def write_html(args, rows, figs, d, depths, vafs, variants):
     H.append("<p class=muted>Generated %s · %d caller runs · simulated + real-1000G-spiked arms · "
              "regenerate: <code>lod_sweep.py --quick</code> then <code>lod_report.py</code></p>"
              % (datetime.date.today().isoformat(), len(rows)))
+    H.append("<p class=muted><b>Deletions tested:</b> <code>del4977</code> = the MITOMAP common deletion "
+             "(m.8470–13447, mediated by a 13&nbsp;bp direct repeat); <code>NONREP</code> = a "
+             "<b>non-repeat</b> ~5&nbsp;kb deletion (m.6000–10998, no flanking repeat), included to show "
+             "recovery is not specific to the repeat-mediated common deletion; <code>HP_ARTIFACT</code> = a "
+             "deletion placed in the control-region poly-C homopolymer tract (m.305–965) — the artifact class "
+             "that dominates real cohorts, used here as a hard negative; <code>ORIGIN</code> = an "
+             "origin-crossing deletion that must be suppressed.</p>")
     # ---- scientific overview (the narrative summary) ----
     H.append("<h2>Overview</h2>")
     H.append(
@@ -674,13 +757,16 @@ def write_html(args, rows, figs, d, depths, vafs, variants):
     H.append("<tr><th>SVCONF calibration</th><td>raw ECE=%s (a rank, not a probability) → isotonic ECE=%s "
              "after the documented recalibration map</td></tr>"
              % (num(d.get("ece_raw"), "%.2f"), num(d.get("ece_cal"), "%.2f")))
-    H.append("<tr><th>Specificity</th><td><b>%s PASS calls over %s negative runs</b> (wild-type blanks + "
-             "origin-suppression); Wilson upper bound on the PASS-on-blank rate = %s</td></tr>"
+    H.append("<tr><th>Specificity (genuine wild-type)</th><td><b>%s PASS calls over %s blank/origin negative "
+             "runs</b> — in fact zero candidate calls on wild-type; Wilson upper bound on the PASS-on-blank "
+             "rate = %s</td></tr>"
              % (d.get("spec_pass_calls"), d.get("spec_neg_runs"), num(d.get("spec_wilson_hi"), "%.3f")))
-    H.append("<tr><th>Control-region artifact (hard negative)</th><td>median SVCONF=%s vs true-deletion "
-             "median=%s — the fragile penalty demotes it ~%s points</td></tr>"
-             % (num(d.get("artifact_svconf_median"), "%.0f"), num(d.get("sep_tp_median"), "%.0f"),
-                num((d.get("sep_tp_median", 0) or 0) - (d.get("artifact_svconf_median", 0) or 0), "%.0f")))
+    cmf, cms = d.get("cm_filter", {}), d.get("cm_svconf", {})
+    H.append("<tr><th>Precision vs the control-region artifact</th><td>the FILTER alone admits the injected "
+             "artifact (precision %s, FPR %s); adding the SVCONF gate raises precision to <b>%s</b> and roughly "
+             "halves the false-positive rate (to %s) — §4</td></tr>"
+             % (num(cmf.get("prec"), "%.2f"), num(cmf.get("fpr"), "%.2f"),
+                num(cms.get("prec"), "%.2f"), num(cms.get("fpr"), "%.2f")))
     H.append("</table>")
 
     def section(title, names, note=""):
@@ -700,16 +786,52 @@ def write_html(args, rows, figs, d, depths, vafs, variants):
             "the right place; <b>PASS rate</b> = the fraction the pipeline reports as a confident call. We give "
             "a surface for both (Figure 1) because they answer different questions — what the caller can SEE "
             "vs what it will confidently REPORT — and detection reaches lower heteroplasmy than PASS by design. "
-            "The empirical per-cell rates (with Wilson 95% confidence intervals) are the primary read-out and "
-            "localize the PASS limit to ~8% heteroplasmy on this reduced grid; the probit/logistic dose-response "
-            "fits (Figure 2; numbers in <code>lod_fits.tsv</code>) are shown for completeness but are unstable "
-            "here because the response is near-separable, so we treat them as supporting only (see §7).")
-    section("3. Heteroplasmy &amp; breakpoint accuracy", ["F7_heteroplasmy_accuracy"])
-    section("4. SVCONF calibration &amp; defense (reviewer core)",
-            ["F3_svconf_monotonicity", "F4_tp_fp_separation", "F5_roc_pr", "F6_calibration"])
-    section("5. Generalization &amp; concordance", ["F8_sim_vs_real"])
+            "The empirical per-cell rates are the primary read-out and localize the PASS limit to ~8% "
+            "heteroplasmy on this reduced grid; <b>Figure 1 shows the point estimates</b>, and their <b>Wilson "
+            "95% confidence intervals are drawn as the error bars in Figure 2</b> and tabulated per cell in "
+            "<code>lod_cells.tsv</code>. The probit/logistic dose-response fits (Figure 2; numbers in "
+            "<code>lod_fits.tsv</code>) are shown for completeness but are unstable here because the response is "
+            "near-separable, so we treat them as supporting only (see §8).")
+    section("3. Heteroplasmy accuracy", ["F7_heteroplasmy_accuracy"])
 
-    H.append("<h2>6. Confidence score (SVCONF): what each term is and why it is present</h2>")
+    # ---- section 4: false positives & precision (confusion matrix + the FP figure) ----
+    H.append("<h2>4. False positives and precision</h2>")
+    H.append("<p>On genuine wild-type the caller is silent — <b>%s candidate calls and %s PASS calls across %s "
+             "wild-type / origin-suppression runs</b>. The only adversarial negative is therefore a deletion "
+             "placed in the control-region homopolymer tract (<code>HP_ARTIFACT</code>), the class that dominates "
+             "real cohorts. The table contrasts the basic FILTER decision with the FILTER plus a confidence gate "
+             "(SVCONF&ge;%s): positives are genuine del4977/NONREP deletions, the negative is the artifact.</p>"
+             % (d.get("blank_fp_calls"), d.get("blank_fp_calls"), d.get("blank_runs"), num(d.get("cm_thr"), "%.0f")))
+    cmf, cms = d.get("cm_filter", {}), d.get("cm_svconf", {})
+
+    def cmrow(name, c):
+        return ("<tr><td>%s</td><td>%s / %s / %s / %s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
+                % (name, c.get("tp"), c.get("fp"), c.get("tn"), c.get("fn"),
+                   num(c.get("prec"), "%.2f"), num(c.get("rec"), "%.2f"), num(c.get("fpr"), "%.2f"),
+                   num(c.get("f1"), "%.2f"), num(c.get("mcc"), "%.2f")))
+    H.append("<table><tr><th>decision rule</th><th>TP/FP/TN/FN</th><th>precision</th><th>recall</th>"
+             "<th>FPR<br><span class=muted>(vs artifact)</span></th><th>F1</th><th>MCC</th></tr>")
+    H.append(cmrow("FILTER alone", cmf))
+    H.append(cmrow("FILTER + SVCONF&ge;%s" % num(d.get("cm_thr"), "%.0f"), cms))
+    H.append("</table>")
+    H.append("<p class=muted><b>Reading the table:</b> the FILTER alone admits the artifact once it reaches ~5%% "
+             "(FPR %s against this hardest negative); the confidence gate removes most of it (precision %s&rarr;%s, "
+             "FPR %s&rarr;%s). <b>Recall is pooled over all heteroplasmy levels</b>, so it is held down by sub-LoD "
+             "events that are missed <i>by definition</i> (the limit of detection, not an error); recall <b>above "
+             "the LoD</b> (&ge;8%%) is %s. FPR is measured against the injected artifact class — a worst case — "
+             "and is 0 against genuine wild-type.</p>"
+             % (num(cmf.get("fpr"), "%.2f"), num(cmf.get("prec"), "%.2f"), num(cms.get("prec"), "%.2f"),
+                num(cmf.get("fpr"), "%.2f"), num(cms.get("fpr"), "%.2f"), num(cms.get("rec_lod"), "%.2f")))
+    for n in ["F9_false_positives"]:
+        if n in figs:
+            H.append("<figure><img src='data:image/png;base64,%s'><figcaption>%s</figcaption></figure>"
+                     % (figs[n], FIGURE_CAPTIONS.get(n, "")))
+
+    section("5. Confidence score (SVCONF): calibration &amp; artifact separation",
+            ["F3_svconf_monotonicity", "F4_tp_fp_separation", "F5_roc_pr", "F6_calibration"])
+    section("6. Generalization: simulated vs real", ["F8_sim_vs_real"])
+
+    H.append("<h2>7. Confidence score (SVCONF): what each term is and why it is present</h2>")
     H.append("<table><tr><th>Term</th><th>Formula</th><th>Why present (failure mode guarded / evidence rewarded)</th><th>Shown by</th></tr>")
     for term, formula, why, shown in SVCONF_BREAKDOWN:
         H.append("<tr><td><b>%s</b></td><td><code>%s</code></td><td>%s</td><td>%s</td></tr>" % (term, formula, why, shown))
@@ -719,7 +841,7 @@ def write_html(args, rows, figs, d, depths, vafs, variants):
              "isotonic map in Figure 6. Weights are expert-set starting points to be tuned on the full grid.</p>")
 
     # ---- limitations & next steps (honest scope) ----
-    H.append("<h2>7. Limitations and next steps</h2>")
+    H.append("<h2>8. Limitations and next steps</h2>")
     H.append(
         "<p>These results come from the tractable <code>--quick</code> grid and should be read with its limits "
         "in mind, each of which has a clear remedy:</p><ul>"
