@@ -88,6 +88,22 @@ jobs:
       - name: SV caller smoke test (in image, vs mock data)
         run: docker run --rm mitohpc:citest bash /MitoHPC/test/sv/run_test.sh
 
+      # Verify the samplot visualization is actually installed and works in the image:
+      # confirm the binary, then run the SV caller with HP_SV_PLOT=1 on a mock deletion and
+      # assert a PNG + manifest are produced (this is the end-to-end HP_SV_PLOT path that the
+      # batch wrapper enables by default). A clear, separate pass/fail signal for samplot.
+      - name: samplot visualization smoke test (in image)
+        run: |
+          docker run --rm mitohpc:citest samplot --version
+          docker run --rm mitohpc:citest bash -euc '
+            cd /MitoHPC
+            HP_SV_PLOT=1 HP_MT=chrM bash scripts/callSV.sh viz \
+              test/sv/bams/sv_del4977_h30.bam /tmp/viz
+            test -s /tmp/viz.sv.plots.tsv
+            png=$(cut -f7 /tmp/viz.sv.plots.tsv | head -1)
+            test -s "$png" && head -c8 "$png" | grep -q PNG
+            echo "samplot OK: $(wc -l < /tmp/viz.sv.plots.tsv) plot(s), $png"'
+
       # Build and push Docker image with Buildx (don't push on PR). Reuses the GHA
       # cache from the test build, so this is fast.
       # https://github.com/docker/build-push-action

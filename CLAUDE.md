@@ -212,9 +212,12 @@ When implementing, honor these rules (they operationalize §0):
 - `scripts/svplot.sh` — optional **samplot** visualization (default-off via `HP_SV_PLOT`). Invoked by
   `callSV.sh` while `$O.bam` is still alive; runs `samplot plot` on the *visualizable* subset (PASS,
   `AFC>=HP_SV_PLOT_MINAF`[0.03], breakpoints NOT in `HP`/`DLOOP`/`NUMT` artifact regions — all
-  configurable; `REPEAT` is NOT skipped so the real common deletion shows), writing `${O}.sv.<bp5>_<end>.png`
-  + a manifest `${O}.sv.plots.tsv`. samplot is installed in the image (Dockerfile, from a pinned GitHub
-  commit); `svplot.sh` degrades gracefully if it is absent.
+  configurable; `REPEAT` is NOT skipped so the real common deletion shows), with a **gene annotation
+  track** (`samplot -A genes.bed.gz` by default; `HP_SV_PLOT_ANNOT` is a configurable comma-separated list
+  of tabixed `$HP_RDIR` BEDs), writing `${O}.sv.<bp5>_<end>.png` + a manifest `${O}.sv.plots.tsv`. samplot
+  is installed in the image (Dockerfile, pip from a pinned GitHub commit — PyPI's `0.0.1` is broken — with
+  numpy/matplotlib/jinja2; no conda); `svplot.sh` degrades gracefully if samplot is absent. CI smoke-tests
+  it in the image (`.github/workflows/docker-publish.yml`).
 - `scripts/getSVSummary.sh` — cohort aggregator (tidy `$ODIR/sv.tab`, `bcftools merge` matrix
   `$ODIR/sv.merged.vcf.gz` with `NS` recurrence, sites union `$ODIR/sv.sites.vcf.gz`, and the
   interactive `$ODIR/sv.report.html`); SEPARATE from `getSummary.sh`, gated on `HP_SV`.

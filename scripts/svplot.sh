@@ -24,9 +24,26 @@ set -eu
 
 S=$1; BAM=$2; O=$3
 MT=${HP_MT:-chrM}
+SDIR=${HP_SDIR:-$(cd "$(dirname "$0")" && pwd)}
+RDIR=${HP_RDIR:-$(cd "$SDIR/../RefSeq" && pwd)}
 SAMPLOT=${HP_SAMPLOT:-samplot}
 TAB="$O.sv.tab"
 MAN="$O.sv.plots.tsv"
+
+# Annotation track(s) drawn under each plot (samplot -A; each must be a bgzipped+tabixed BED under
+# $RDIR). Default: genes.bed.gz — labels the gene/tRNA/rRNA each deletion removes (the OXPHOS complex
+# is implicit in the gene name, e.g. ND*/COX*/CYTB/ATP*). Configurable comma-separated list; e.g.
+# HP_SV_PLOT_ANNOT=genes.bed.gz,CDS.bed.gz . Empty disables the track.
+ANNOT=${HP_SV_PLOT_ANNOT-genes.bed.gz}
+aopt=""
+if [ -n "$ANNOT" ]; then
+  oldifs=$IFS; IFS=','
+  for a in $ANNOT; do
+    af="$RDIR/$a"
+    if [ -s "$af" ] && { [ -s "$af.tbi" ] || [ -s "$af.csi" ]; }; then aopt="$aopt -A $af"; fi
+  done
+  IFS=$oldifs
+fi
 
 [ -n "${HP_SV_PLOT:-}" ] || exit 0                 # default-off
 [ -s "$TAB" ] || exit 0                            # nothing called
@@ -59,7 +76,7 @@ awk -F'\t' -v pass="$PASS" -v minaf="$MINAF" -v skip="$SKIP" -v minsc="$MINSVCON
   }' "$TAB" | while IFS=$'\t' read -r bp5 end afc svlen svconf; do
   png="$O.sv.${bp5}_${end}.png"
   title="$S  m.$((bp5+1))_${end}del  VAF=$afc"
-  if "$SAMPLOT" plot -n "$title" -b "$BAM" -o "$png" -c "$MT" -s "$bp5" -e "$end" -t DEL >/dev/null 2>&1 \
+  if "$SAMPLOT" plot -n "$title" -b "$BAM" -o "$png" -c "$MT" -s "$bp5" -e "$end" -t DEL $aopt >/dev/null 2>&1 \
      && [ -s "$png" ]; then
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$S" "$bp5" "$end" "$afc" "$svlen" "$svconf" "$png" >> "$MAN"
   else
