@@ -14,6 +14,7 @@ Inputs:
   --out       output HTML path ($ODIR/sv.report.html)
 """
 import argparse
+import base64
 import datetime
 import gzip
 import json
@@ -107,6 +108,63 @@ def load_calls(path):
     return calls
 
 
+def load_plots(path, dedup_bp=25):
+    """samplot manifest TSV (sample, bp5, end, afc, svlen, svconf, png_path) -> representative plot
+    dicts with the PNG base64-EMBEDDED (so the report stays single-file/offline).
+
+    SUBSAMPLING: to keep the gallery legible, calls whose breakpoints fall in the same cluster
+    (rounded to `dedup_bp`, the same rounding the recurrence table uses; 0 disables) are collapsed to
+    ONE representative — the highest-heteroplasmy call (tie-broken by SVCONF). Each representative
+    records how many distinct samples shared that site (`nsmp`). Returns (representatives, n_total)."""
+    raw = []
+    if path and os.path.exists(path):
+        seen = set()
+        with open(path) as fh:
+            for ln in fh:
+                f = ln.rstrip("\n").split("\t")
+                if len(f) < 7:
+                    continue
+                smp, bp5, end, afc, svlen, svconf, png = f[:7]
+                key = (smp, bp5, end)
+                if key in seen or not os.path.exists(png):
+                    continue
+                seen.add(key)
+                try:
+                    raw.append({"smp": smp, "bp5": int(bp5), "end": int(end), "afc": float(afc or 0),
+                                "svlen": int(svlen or 0), "svconf": svconf, "png": png})
+                except ValueError:
+                    continue
+    n_total = len(raw)
+
+    def conf(p):
+        try:
+            return float(p["svconf"])
+        except (TypeError, ValueError):
+            return -1.0
+    if dedup_bp and dedup_bp > 0:
+        groups = {}
+        for p in raw:
+            k = (round(p["bp5"] / dedup_bp) * dedup_bp, round(p["end"] / dedup_bp) * dedup_bp)
+            groups.setdefault(k, []).append(p)
+        reps = []
+        for members in groups.values():
+            rep = dict(max(members, key=lambda m: (m["afc"], conf(m))))
+            rep["nsmp"] = len({m["smp"] for m in members})
+            reps.append(rep)
+    else:
+        reps = [dict(p, nsmp=1) for p in raw]
+
+    plots = []                                   # base64 ONLY the representatives
+    for rep in sorted(reps, key=lambda p: (-p["afc"], p["smp"])):
+        try:
+            with open(rep["png"], "rb") as ph:
+                rep["png"] = base64.b64encode(ph.read()).decode()
+            plots.append(rep)
+        except OSError:
+            continue
+    return plots, n_total
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--tab", required=True)
@@ -114,27 +172,34 @@ def main():
     ap.add_argument("--nsamples", type=int, default=0)
     ap.add_argument("--mtlen", type=int, default=16569)
     ap.add_argument("--chrom", default="chrM")
+    ap.add_argument("--plots", help="samplot manifest TSV (sample,bp5,end,afc,svlen,svconf,png) to embed")
+    ap.add_argument("--plot-dedup", type=int, default=25,
+                    help="collapse plots whose breakpoints cluster within N bp to one representative (0=off)")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
     feats = load_features(args.genes, args.chrom)
     calls = load_calls(args.tab)
+    plots, plots_total = load_plots(args.plots, args.plot_dedup)
     nsamp = args.nsamples or len({c["smp"] for c in calls}) or 1
 
     data = {
         "meta": {
             "mtlen": args.mtlen, "nsamples": nsamp, "ncalls": len(calls),
             "generated": datetime.date.today().strftime("%Y-%m-%d"),
+            "plotsTotal": plots_total, "plotDedup": args.plot_dedup,
         },
         "features": feats,
         "calls": calls,
+        "plots": plots,
         "catColor": CAT_COLOR, "catLabel": CAT_LABEL, "catOrder": CAT_ORDER,
     }
     html = TEMPLATE.replace("/*__DATA__*/", json.dumps(data, separators=(",", ":")))
     with open(args.out, "w") as fh:
         fh.write(html)
     import sys
-    sys.stderr.write("[svReport] %d calls, %d samples -> %s\n" % (len(calls), nsamp, args.out))
+    sys.stderr.write("[svReport] %d calls, %d samples, %d plots -> %s\n"
+                     % (len(calls), nsamp, len(plots), args.out))
 
 
 TEMPLATE = r"""<!DOCTYPE html>
@@ -226,6 +291,24 @@ details{margin:8px 0}summary{cursor:pointer;color:var(--accent);font-size:14px}
 <p class="sub">Distinct deletion sites (breakpoints rounded to 25 bp), ranked by the number of samples carrying them.</p>
 <table id="rec"><thead><tr><th>breakpoints (m.)</th><th class="n">size (bp)</th><th class="n">samples</th><th class="n">cohort %</th><th class="n">median VAF</th><th>genes</th><th>tags</th></tr></thead><tbody></tbody></table>
 
+<style>
+#plotsection .plotwrap{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap;margin-top:6px}
+#plotsection #plottbl{flex:0 0 auto;display:block;max-height:520px;overflow:auto}
+#plotsection #plottbl tbody tr{cursor:pointer}
+#plotsection #plottbl tbody tr.sel{background:rgba(10,140,90,.16);font-weight:600}
+#plotsection .plotfig{flex:1 1 460px;min-width:340px;margin:0}
+#plotsection .plotfig img{max-width:100%;border:1px solid #ddd;border-radius:6px;background:#fff}
+#plotsection figcaption{margin-top:6px}
+</style>
+<section id="plotsection" hidden>
+<h2>structural-variant plots <span class="muted" style="font-weight:400;font-size:13px">(samplot)</span></h2>
+<p class="sub">Curated calls &mdash; <b>PASS</b>, heteroplasmy above the configured floor, and breakpoints <b>outside</b> the homopolymer / D-loop / NUMT artifact regions &mdash; rendered with <span class="mono">samplot</span> (read depth, split reads, the deletion span). <b>Subsampling:</b> calls that share a breakpoint site <span id="plotround"></span> are collapsed to <b>one representative</b> (the highest-heteroplasmy call); the <b>samples</b> column shows how many samples carried that site. <span id="plotcount" class="muted"></span> Click a row to view its image. (Filter &amp; subsampling are configurable via <span class="mono">HP_SV_PLOT_*</span> / <span class="mono">--plot-dedup</span>.)</p>
+<div class="plotwrap">
+  <table id="plottbl"><thead><tr><th>sample</th><th>breakpoints (m.)</th><th class="n">size</th><th class="n">VAF</th><th class="n">SVCONF</th><th class="n">samples</th></tr></thead><tbody></tbody></table>
+  <figure class="plotfig"><img id="samplotimg" alt="samplot image"><figcaption id="plotcap" class="muted">select a row to view its samplot image</figcaption></figure>
+</div>
+</section>
+
 <details><summary>how these calls are made</summary>
 <p class="muted" style="font-size:14px">Each sample's circular-aware chrM alignment is scanned for <b>split reads</b> (reads whose two halves map across a deletion junction). Junctions are clustered to base-pair breakpoints. A deletion is reported <b>PASS</b> either when a <b>coverage drop</b> and the junction agree (<span class="mono">SVCLAIM=DJ</span>) <i>or</i> when the split-read junction alone is strong and clean (<span class="mono">SVCLAIM=J</span> — valuable because mtDNA read depth is finicky). Heteroplasmy (VAF) is the <b>coverage-dosage</b> fraction (<span class="mono">AFC</span>, shown here), with the junction-read fraction (<span class="mono">AFJ</span>) as corroborating evidence; their agreement is a QC signal (<span class="mono">AFDIFF</span>). The breakpoint microhomology / direct repeat (e.g. the 13&nbsp;bp repeat of the common deletion) is reported as <span class="mono">HOMLEN</span>/<span class="mono">DELCLASS</span>. See <span class="mono">docs/SV_METHODS.md</span>.</p></details>
 <details><summary>glossary &mdash; definitions of terms used in this report</summary>
@@ -251,6 +334,7 @@ details{margin:8px 0}summary{cursor:pointer;color:var(--accent);font-size:14px}
 <script>
 const DATA=/*__DATA__*/;
 const M=DATA.meta, MT=M.mtlen, NS=M.nsamples, F=DATA.features, ALL=DATA.calls;
+const PLOTS=DATA.plots||[];
 const CC=DATA.catColor, CL=DATA.catLabel, CO=DATA.catOrder;
 const $=id=>document.getElementById(id);
 const rnd=(x,d=0)=>{const p=Math.pow(10,d);return Math.round(x*p)/p};
@@ -373,6 +457,20 @@ function recTable(cs){const rows=recurrence(cs).slice(0,12).map(g=>{
 function legend(){$('legend').innerHTML=CO.map(c=>`<span><span class="sw" style="background:${CC[c]}"></span>${CL[c]}</span>`).join('')+
   ' <span style="margin-left:10px">VAF <span class="vafbar" style="width:90px;display:inline-block;vertical-align:-1px"></span> 0→100%</span>'}
 
+// ---- samplot gallery: an interactive table; selecting a row shows its embedded PNG ----
+function showPlot(i,row){document.querySelectorAll('#plottbl tbody tr').forEach(r=>r.classList.remove('sel'));
+  if(row)row.classList.add('sel');const p=PLOTS[i];
+  $('samplotimg').src='data:image/png;base64,'+p.png;
+  $('plotcap').textContent=`${p.smp} · m.${p.bp5+1}_${p.end}del · ${p.svlen.toLocaleString()} bp · VAF ${pct(p.afc)} · SVCONF ${p.svconf}`+((p.nsmp||1)>1?` · representative of ${p.nsmp} samples`:'')}
+function buildPlots(){if(!PLOTS.length)return;$('plotsection').hidden=false;
+  const dd=M.plotDedup||0, tot=M.plotsTotal||PLOTS.length;
+  $('plotround').textContent=dd>0?`(rounded to ${dd} bp)`:'';
+  $('plotcount').textContent=`Showing ${PLOTS.length} representative site${PLOTS.length==1?'':'s'} from ${tot} visualizable call${tot==1?'':'s'}.`;
+  const tb=document.querySelector('#plottbl tbody');
+  tb.innerHTML=PLOTS.map((p,i)=>`<tr data-i="${i}"><td>${p.smp}</td><td class="mono">m.${p.bp5+1}_${p.end}del</td><td class="n">${p.svlen.toLocaleString()}</td><td class="n">${pct(p.afc)}</td><td class="n">${p.svconf}</td><td class="n">${p.nsmp||1}</td></tr>`).join('');
+  tb.querySelectorAll('tr').forEach(r=>r.onclick=()=>showPlot(+r.dataset.i,r));
+  showPlot(0,tb.querySelector('tr'))}
+
 function render(){const cs=filtered();cards(cs);circle(cs);linear(cs);
   hist('vafhist',cs.filter(c=>c.pass).map(c=>c.vaf),20,v=>pct(v),v=>v);
   const mlen=Math.max(1,...ALL.map(c=>c.len));hist('szhist',cs.map(c=>c.len),20,v=>rnd(v*mlen/1000,1)+'k',v=>v/mlen);
@@ -395,6 +493,7 @@ function ui(){
     $('fpass').checked=true;$('fcommon').checked=false;$('fvaf').value=0;$('fvafv').textContent='0%';$('fsmp').value='';$('fjr').value=0;$('fjrv').textContent='0';
     document.querySelectorAll('[data-cls]').forEach(b=>b.checked=true);document.querySelectorAll('[data-jsup]').forEach(b=>b.checked=true);render()};
   legend();
+  buildPlots();
   const TH=['auto','light','dark'];let ti=0;
   try{const s=localStorage.getItem('svtheme');if(s){const i=TH.indexOf(s);if(i>=0)ti=i}}catch(e){}
   function applyTheme(){const t=TH[ti];if(t==='auto')document.documentElement.removeAttribute('data-svtheme');else document.documentElement.setAttribute('data-svtheme',t);$('theme').textContent='theme: '+t;try{localStorage.setItem('svtheme',t)}catch(e){}render()}

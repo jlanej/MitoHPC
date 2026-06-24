@@ -31,6 +31,19 @@ CONTAINER_IMAGE="${3:-docker://ghcr.io/jlanej/mitohpc:main}"
 # HP_SV to empty in the environment:  HP_SV= mitohpc-batch-container.sh <dir> ...
 SV_MODE="${HP_SV-callsv}"
 
+# SV VISUALIZATION (samplot): runs automatically alongside SV calling and renders the curated calls
+# (PASS, heteroplasmy >= HP_SV_PLOT_MINAF[0.03], breakpoints outside HP/DLOOP/NUMT artifact regions)
+# into the interactive HTML report. Default ON when SV calling runs; disable with HP_SV_PLOT= . The
+# visualized subset is fully configurable via HP_SV_PLOT_* (forwarded below; see scripts/svplot.sh).
+SV_PLOT="${HP_SV_PLOT-1}"
+PLOT_ENV=""
+if [ -n "$SV_PLOT" ] && [ -n "$SV_MODE" ]; then
+  PLOT_ENV=",HP_SV_PLOT=$SV_PLOT"
+  for v in HP_SV_PLOT_MINAF HP_SV_PLOT_PASS HP_SV_PLOT_SKIP HP_SV_PLOT_MINSVCONF HP_SV_PLOT_MAX HP_SV_PLOT_DEDUP; do
+    eval "vv=\${$v:-}"; [ -n "$vv" ] && PLOT_ENV="$PLOT_ENV,$v=$vv"
+  done
+fi
+
 # Function to show usage
 show_usage() {
     cat << EOF
@@ -126,6 +139,7 @@ echo "Data directory: $DATA_DIR"
 echo "Number of threads: $NUM_THREADS"
 echo "Container image: $CONTAINER_IMAGE"
 echo "SV calling (HP_SV): ${SV_MODE:-off (disabled)}"
+echo "SV visualization (samplot, HP_SV_PLOT): ${SV_PLOT:+on}${SV_PLOT:-off (disabled)}"
 echo
 
 # Count input files (group the -name alternation so any future trailing predicate binds to both)
@@ -257,7 +271,7 @@ CONTAINER_EXIT_CODE=0
 apptainer exec \
     --bind "$WORKING_DIR":"$WORKING_DIR" \
     --pwd "$WORKING_DIR" \
-    --env HP_ADIR="$DATA_DIR",HP_ODIR=out,HP_IN=in.txt,HP_SV="$SV_MODE"$HP_P_ENV \
+    --env HP_ADIR="$DATA_DIR",HP_ODIR=out,HP_IN=in.txt,HP_SV="$SV_MODE"$HP_P_ENV$PLOT_ENV \
     "$CONTAINER_IMAGE" \
     "./$(basename "$TEMP_SCRIPT")" "$NUM_THREADS" || CONTAINER_EXIT_CODE=$?
 

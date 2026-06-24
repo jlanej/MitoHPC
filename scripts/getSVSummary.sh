@@ -58,12 +58,22 @@ tabix -p vcf -f "$ODIR/sv.merged.vcf.gz"
 bcftools view -G -Oz -o "$ODIR/sv.sites.vcf.gz" "$ODIR/sv.merged.vcf.gz"
 tabix -p vcf -f "$ODIR/sv.sites.vcf.gz"
 
-# (4) interactive, self-contained HTML report (svReport.py is stdlib-only — no pysam needed)
+# (3b) collect the per-sample samplot manifests (if HP_SV_PLOT produced any) into one cohort manifest
+popt=""
+: > "$ODIR/sv.plots.tsv"
+for p in $(awk '{print $3}' "$HP_IN"); do
+  [ -s "$p.sv.plots.tsv" ] && cat "$p.sv.plots.tsv" >> "$ODIR/sv.plots.tsv"
+done
+[ -s "$ODIR/sv.plots.tsv" ] && popt="--plots $ODIR/sv.plots.tsv"
+
+# (4) interactive, self-contained HTML report (svReport.py is stdlib-only — no pysam needed;
+#     embeds any samplot PNGs as base64 so the report stays single-file/offline)
 RDIR=${HP_RDIR:-$(cd "$SDIR/../RefSeq" && pwd)}
 N=$(grep -vc '^#' "$HP_IN")
 gopt=""; [ -s "$RDIR/genes.bed.gz" ] && gopt="--genes $RDIR/genes.bed.gz"
 "${HP_PYTHON:-python3}" "$SDIR/svReport.py" --tab "$ODIR/sv.tab" --nsamples "$N" \
-  --mtlen "${HP_MTLEN:-16569}" --chrom "${HP_MT:-chrM}" $gopt --out "$ODIR/sv.report.html" \
+  --mtlen "${HP_MTLEN:-16569}" --chrom "${HP_MT:-chrM}" --plot-dedup "${HP_SV_PLOT_DEDUP:-25}" \
+  $gopt $popt --out "$ODIR/sv.report.html" \
   || echo "[getSVSummary] WARN: HTML report generation failed" >&2
 
 echo "[getSVSummary] wrote $ODIR/{sv.tab, sv.merged.vcf.gz, sv.sites.vcf.gz, sv.report.html}" >&2

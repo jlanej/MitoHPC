@@ -49,6 +49,15 @@ RUN \
   $HP_SDIR/checkInstall.sh && \
   rm -fr /MitoHPC/prerequisites/
 
+# samplot — structural-variant visualization used by the SV module's optional HP_SV_PLOT step. PyPI
+# ships a broken 0.0.1, so install from a pinned GitHub commit; --no-deps avoids samplot's stale
+# version pins, and the runtime deps it needs (numpy/matplotlib/jinja2) are installed explicitly
+# (pysam is already present for callsv.py). Cache-stable (independent of the SV caller code below).
+RUN python3 -m pip install --no-cache-dir numpy matplotlib jinja2 && \
+    python3 -m pip install --no-cache-dir --no-deps \
+      'samplot @ git+https://github.com/ryanlayer/samplot.git@2929e4a' && \
+    samplot plot --help >/dev/null
+
 ###########################################
 # FAST LAYER: bring in the rest of the repo (SV caller, tests, docs). A code-only edit re-runs
 # only from here, reusing the cached install layer above. Re-chmod (the full scripts/ is present

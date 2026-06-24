@@ -209,19 +209,33 @@ When implementing, honor these rules (they operationalize §0):
   `$HP_PYTHON(=python3) callsv.py` on the live `$O.bam`, writing only `$O.sv.vcf` + `$O.sv.tab`.
   Invoked by the gated block in `filter.sh` (after the GRIDSS block, before the BAM `rm`).
 - `scripts/sv.vcf` — VCF header template (mirrors `gridss.vcf`).
+- `scripts/svplot.sh` — optional **samplot** visualization (default-off via `HP_SV_PLOT`). Invoked by
+  `callSV.sh` while `$O.bam` is still alive; runs `samplot plot` on the *visualizable* subset (PASS,
+  `AFC>=HP_SV_PLOT_MINAF`[0.03], breakpoints NOT in `HP`/`DLOOP`/`NUMT` artifact regions — all
+  configurable; `REPEAT` is NOT skipped so the real common deletion shows), writing `${O}.sv.<bp5>_<end>.png`
+  + a manifest `${O}.sv.plots.tsv`. samplot is installed in the image (Dockerfile, from a pinned GitHub
+  commit); `svplot.sh` degrades gracefully if it is absent.
 - `scripts/getSVSummary.sh` — cohort aggregator (tidy `$ODIR/sv.tab`, `bcftools merge` matrix
   `$ODIR/sv.merged.vcf.gz` with `NS` recurrence, sites union `$ODIR/sv.sites.vcf.gz`, and the
   interactive `$ODIR/sv.report.html`); SEPARATE from `getSummary.sh`, gated on `HP_SV`.
 - `scripts/svReport.py` — builds a **self-contained, offline, interactive HTML report** (vanilla
   SVG/JS, no deps) from `sv.tab` + `genes.bed.gz`: circular mtDNA map + linear genome browser with
   gene/OXPHOS-complex annotation, a per-position deletion-frequency track, VAF-coloured calls, live
-  filtering, summary stats, and a recurrence table.
+  filtering, summary stats, a recurrence table, and (when `--plots` is given) an **interactive samplot
+  gallery** — a table whose rows reveal the base64-embedded samplot PNG on click (still single-file/offline).
+  The gallery is **subsampled to one representative call per breakpoint cluster** (`--plot-dedup` bp,
+  default 25 = the recurrence-table rounding; highest-heteroplasmy call kept, `samples` column shows the
+  cluster size), and the report spells this out; only representative PNGs are embedded.
 - Output is general VCF/SV best practice (NOT this repo's other VCFs): `##contig`/`##reference`/
   provenance headers, sample-named genotype column, `HOMLEN`/`HOMSEQ`/`DELCLASS`/`CIPOS`/`CIEND`,
   `SVCLAIM`, `COMMON`, `GENE`/`NGENE`, `HGVS`, `FORMAT GT:DP:AD:AF:SR`; VCF 4.2 (negative `SVLEN`).
 - Wiring: `HP_SV` + `HP_SV_*` tunables in `init.sh`; validation + exports + gated summary in
-  `run.sh`; one gated block in `filter.sh`. With `HP_SV` empty the pipeline is unchanged.
-- Tests/mock data: **`test/sv/`** — `run_test.py` (via `run_test.sh`) runs 24 checks: 10 mock
+  `run.sh`; one gated block in `filter.sh`. With `HP_SV` empty the pipeline is unchanged. SV
+  visualization defaults ON and is configured/forwarded by `mitohpc-batch-container.sh`
+  (`HP_SV_PLOT` enable + `HP_SV_PLOT_*` filter), so a default batch run also produces the samplot
+  gallery; the bare pipeline (no `HP_SV_PLOT`) is unchanged.
+- Tests/mock data: **`test/sv/`** — `run_test.py` (via `run_test.sh`) runs 24 checks (+2 samplot
+  visualization checks when `samplot` is on PATH, e.g. inside the image): 10 mock
   scenarios (multi-deletion, near-homoplasmy, tandem-dup-not-called, origin-crossing, D-loop,
   low-coverage, …) against committed mock BAMs (`test/sv/bams/`, ~13 MB), degenerate inputs, cohort
   recurrence, a `bcftools` VCF-spec gate, a schema check on the committed example outputs, plus

@@ -342,6 +342,36 @@ def check_real(outdir):
 
 
 # --------------------------------------------------------------------------- #
+def check_plots(outdir):
+    """Optional: exercise the HP_SV_PLOT samplot visualization end-to-end (skipped if samplot absent).
+    A visualizable call (del4977: PASS, high AFC, no HP/DLOOP/NUMT flag) -> a PNG + manifest that
+    svReport embeds; a DLOOP-flagged call -> NOT visualized (the artifact filter)."""
+    if not shutil.which("samplot"):
+        print("\n[samplot visualization — SKIPPED (samplot not on PATH)]")
+        return
+    print("\n[samplot visualization — HP_SV_PLOT end-to-end]")
+    env = dict(os.environ, HP_SDIR=SDIR, HP_RDIR=RDIR, HP_PYTHON=PYEXE, HP_MT="chrM",
+               HP_MTLEN="16569", HP_SV_PLOT="1")
+
+    def run_plot(name):
+        pref = os.path.join(outdir, "plot_" + name)
+        subprocess.run(["bash", os.path.join(SDIR, "callSV.sh"), name, os.path.join(BAMS, name + ".bam"), pref],
+                       env=env, capture_output=True, text=True)
+        man = pref + ".sv.plots.tsv"
+        return pref, man, (os.path.exists(man) and os.path.getsize(man) > 0)
+
+    pref, man, has = run_plot("sv_del4977_h30")
+    png_ok = has and os.path.exists(open(man).readline().rstrip("\n").split("\t")[-1])
+    rep = os.path.join(outdir, "plot_report.html")
+    subprocess.run([PYEXE, os.path.join(SDIR, "svReport.py"), "--tab", pref + ".sv.tab",
+                    "--plots", man, "--nsamples", "1", "--out", rep], capture_output=True, text=True)
+    h = open(rep).read() if os.path.exists(rep) else ""
+    record("samplot_plot", png_ok and '"png":' in h and 'id="plotsection"' in h,
+           "del4977 -> PNG + manifest embedded in report")
+    _, dman, dhas = run_plot("sv_dloop")
+    record("samplot_filter", not dhas, "DLOOP-flagged call correctly NOT visualized")
+
+
 def main():
     samples = load_truth()
     outdir = tempfile.mkdtemp()
@@ -354,6 +384,7 @@ def main():
         check_degenerate(outdir)
         check_vcf_spec(outdir)
         check_real(outdir)
+        check_plots(outdir)
     finally:
         shutil.rmtree(outdir, ignore_errors=True)
 

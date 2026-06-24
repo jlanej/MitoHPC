@@ -100,3 +100,10 @@ fi
   --srtol "$SRTOL" --srmincons "$SRMINCONS" --srminsb "$SRMINSB" $maskopt
 
 echo "[callSV] $S -> $O.sv.vcf ($(grep -vc '^#' "$O.sv.vcf") records)" >&2
+
+# optional samplot visualization of the visualizable subset (default-off via HP_SV_PLOT). Runs HERE,
+# while $O.bam is still alive (filter.sh deletes it right after callSV.sh returns). A plotting failure
+# never aborts the per-sample run.
+if [ -n "${HP_SV_PLOT:-}" ]; then
+  bash "$SDIR/svplot.sh" "$S" "$BAM" "$O" || echo "[callSV] WARNING: svplot failed for $S" >&2
+fi
