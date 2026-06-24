@@ -20,6 +20,11 @@ export HP_SDIR=$ROOT/scripts HP_RDIR=$ROOT/RefSeq
 EX=$HERE/example
 SAMPLE=sv_del4977_h30          # representative per-sample example (canonical common deletion)
 
+# Include the samplot gallery in the example report so it demonstrates the visualization. Needs
+# samplot on PATH; svplot.sh degrades gracefully (no gallery) if it is absent. The PNGs are embedded
+# as base64 in the committed sv.report.html (portable); the per-sample .png/manifest are NOT committed.
+export HP_SV_PLOT=${HP_SV_PLOT:-1}
+
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/out" "$EX"; : > "$tmp/in.txt"
 for b in "$HERE"/bams/*.bam; do
