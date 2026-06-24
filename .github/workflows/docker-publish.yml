@@ -95,6 +95,10 @@ jobs:
       - name: samplot visualization smoke test (in image)
         run: |
           docker run --rm mitohpc:citest samplot --version
+          # matplotlib>=3.7 regresses samplot's axes (a spurious 0..1 axis overprints the genomic/coverage
+          # axes; samplot #189/#201). Assert the pinned <3.7 so a base-image/dep bump can't sneak it back.
+          docker run --rm mitohpc:citest python3 -c \
+            'import matplotlib as m; print("matplotlib", m.__version__); v=tuple(map(int,m.__version__.split(".")[:2])); assert v<(3,7), m.__version__'
           docker run --rm mitohpc:citest bash -euc '
             cd /MitoHPC
             HP_SV_PLOT=1 HP_MT=chrM bash scripts/callSV.sh viz \

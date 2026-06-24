@@ -215,9 +215,19 @@ When implementing, honor these rules (they operationalize §0):
   configurable; `REPEAT` is NOT skipped so the real common deletion shows), with a **gene annotation
   track** (`samplot -A genes.bed.gz` by default; `HP_SV_PLOT_ANNOT` is a configurable comma-separated list
   of tabixed `$HP_RDIR` BEDs), writing `${O}.sv.<bp5>_<end>.png` + a manifest `${O}.sv.plots.tsv`. samplot
-  is installed in the image (Dockerfile, pip from a pinned GitHub commit — PyPI's `0.0.1` is broken — with
-  numpy/matplotlib/jinja2; no conda); `svplot.sh` degrades gracefully if samplot is absent. CI smoke-tests
-  it in the image (`.github/workflows/docker-publish.yml`).
+  is installed in the image (Dockerfile, pip from a pinned GitHub commit `2929e4a` — PyPI's `0.0.1` is broken;
+  `2929e4a` = the v1.3.0 release plus Python-3.11/numpy forward-compat fixes — with jinja2; no conda).
+  **`matplotlib` is pinned `==3.6.3` (and `numpy<2`):** matplotlib `>=3.7` regressed samplot's axes — a
+  spurious `0..1` normalized axis is overprinted on the genomic x-axis and coverage/insert-size y-axes,
+  making breakpoints unreadable so calls appear not to line up with the reads (samplot issues #189/#201;
+  glaring on narrow/small-deletion windows, subtle on wide ones). This — not the samplot commit — was the
+  real cause of bad plots; an earlier unpinned `matplotlib` + `--no-deps` install let `>=3.7` in. A build-time
+  assert fails the image if matplotlib ever resolves `>=3.7`. `svplot.sh` degrades gracefully if samplot is
+  absent. CI smoke-tests it in the image, asserting `matplotlib<3.7` (`.github/workflows/docker-publish.yml`).
+  Visualization reuses the SAME circular-aware `$O.bam` the caller reads, so for the plotted (PASS, non-`WRAP`)
+  subset samplot's coordinates match the caller's `1..MTLEN` frame; only genuinely origin-crossing reads carry
+  un-wrapped SA tags (circSam.pl does not rewrite them), and those calls are `WRAP`-flagged out of the plotted
+  set, so the circularization blind spot never reaches a rendered plot.
 - `scripts/getSVSummary.sh` — cohort aggregator (tidy `$ODIR/sv.tab`, `bcftools merge` matrix
   `$ODIR/sv.merged.vcf.gz` with `NS` recurrence, sites union `$ODIR/sv.sites.vcf.gz`, and the
   interactive `$ODIR/sv.report.html`); SEPARATE from `getSummary.sh`, gated on `HP_SV`.
