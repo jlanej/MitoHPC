@@ -372,6 +372,31 @@ def check_plots(outdir):
     record("samplot_filter", not dhas, "DLOOP-flagged call correctly NOT visualized")
 
 
+def check_recall(outdir):
+    """HP_SV_KEEPBAM persists the circular-aware BAM; re-calling on it (the fast re-run path, no
+    realign) must reproduce the original calls byte-for-byte."""
+    print("\n[SV re-run: keep-BAM persistence + recall fidelity]")
+    bam = os.path.join(BAMS, "sv_del4977_h30.bam")
+    env = dict(os.environ, HP_SDIR=SDIR, HP_RDIR=RDIR, HP_PYTHON=PYEXE, HP_MT="chrM", HP_MTLEN="16569")
+    p1 = os.path.join(outdir, "keep")
+    subprocess.run(["bash", os.path.join(SDIR, "callSV.sh"), "sv_del4977_h30", bam, p1],
+                   env=dict(env, HP_SV_KEEPBAM="1"), capture_output=True, text=True)
+    kept = p1 + ".sv.bam"
+    persisted = os.path.exists(kept) and os.path.getsize(kept) > 0
+    record("keepbam_persist", persisted, "HP_SV_KEEPBAM wrote $O.sv.bam")
+    p2 = os.path.join(outdir, "recall")
+    if persisted:
+        subprocess.run(["bash", os.path.join(SDIR, "callSV.sh"), "sv_del4977_h30", kept, p2],
+                       env=dict(env, HP_SV_KEEPBAM=""), capture_output=True, text=True)
+        a, b = read_tab(p1 + ".sv.tab"), read_tab(p2 + ".sv.tab")
+        keys = ("pos_bp5", "end_bp3", "svlen", "af_coverage", "svconf", "svimpact", "filter")
+        same = (len(a) == len(b) and len(a) >= 1
+                and all([r1[k] for k in keys] == [r2[k] for k in keys] for r1, r2 in zip(a, b)))
+        record("recall_fidelity", same, "re-call on persisted BAM reproduces the call(s)")
+    else:
+        record("recall_fidelity", False, "no persisted BAM to re-call")
+
+
 def main():
     samples = load_truth()
     outdir = tempfile.mkdtemp()
@@ -385,6 +410,7 @@ def main():
         check_vcf_spec(outdir)
         check_real(outdir)
         check_plots(outdir)
+        check_recall(outdir)
     finally:
         shutil.rmtree(outdir, ignore_errors=True)
 

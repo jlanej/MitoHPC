@@ -232,11 +232,19 @@ When implementing, honor these rules (they operationalize §0):
 - Output is general VCF/SV best practice (NOT this repo's other VCFs): `##contig`/`##reference`/
   provenance headers, sample-named genotype column, `HOMLEN`/`HOMSEQ`/`DELCLASS`/`CIPOS`/`CIEND`,
   `SVCLAIM`, `COMMON`, `GENE`/`NGENE`, `HGVS`, `FORMAT GT:DP:AD:AF:SR`; VCF 4.2 (negative `SVLEN`).
+- `scripts/recallSV.sh` — **fast SV re-run**: re-runs ONLY the SV caller (+ samplot + cohort report)
+  on persisted circular-aware BAMs, skipping the expensive subsample→realign→SNV front end. Enabled by
+  `HP_SV_KEEPBAM=1` on a full run (gated copy in `callSV.sh`: `$O.bam`→`$O.sv.bam`, which `filter.sh`'s
+  `rm -f $O.bam*` does NOT match, so it survives — no frozen-file edit; ~10 MB/sample). Then
+  `HP_SV_RECALL=1 mitohpc-batch-container.sh <dir> …` (or `recallSV.sh <out> <jobs>`) refreshes `sv.*`
+  in minutes (~3 s/sample) instead of a multi-hour full re-run — byte-identical to a fresh SV call; never
+  touches the frozen SNV/CN deliverables. The self-copy guard in `callSV.sh` lets it re-run on the
+  persisted BAM safely.
 - Wiring: `HP_SV` + `HP_SV_*` tunables in `init.sh`; validation + exports + gated summary in
   `run.sh`; one gated block in `filter.sh`. With `HP_SV` empty the pipeline is unchanged. SV
   visualization defaults ON and is configured/forwarded by `mitohpc-batch-container.sh`
   (`HP_SV_PLOT` enable + `HP_SV_PLOT_*` filter), so a default batch run also produces the samplot
-  gallery; the bare pipeline (no `HP_SV_PLOT`) is unchanged.
+  gallery; `HP_SV_KEEPBAM`/`HP_SV_RECALL` (re-run speedup) are forwarded too; the bare pipeline is unchanged.
 - Tests/mock data: **`test/sv/`** — `run_test.py` (via `run_test.sh`) runs 24 checks (+2 samplot
   visualization checks when `samplot` is on PATH, e.g. inside the image): 10 mock
   scenarios (multi-deletion, near-homoplasmy, tandem-dup-not-called, origin-crossing, D-loop,

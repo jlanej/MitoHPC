@@ -36,9 +36,19 @@ SV_MODE="${HP_SV-callsv}"
 # into the interactive HTML report. Default ON when SV calling runs; disable with HP_SV_PLOT= . The
 # visualized subset is fully configurable via HP_SV_PLOT_* (forwarded below; see scripts/svplot.sh).
 SV_PLOT="${HP_SV_PLOT-1}"
+
+# SV RE-RUN SPEEDUP. Persist each circular-aware alignment ($O.sv.bam, ~10 MB/sample) during a full run
+# so the SV caller can later be re-run WITHOUT the expensive realign/SNV front end. DEFAULT ON (so a
+# future SV-caller/score/plot change can be applied cheaply); disable with HP_SV_KEEPBAM= . Then
+# HP_SV_RECALL=1 re-runs ONLY the SV caller (+ visualization + report) on the persisted BAMs, in minutes.
+SV_KEEPBAM="${HP_SV_KEEPBAM-1}"
+SV_RECALL="${HP_SV_RECALL:-}"
+
 PLOT_ENV=""
-if [ -n "$SV_PLOT" ] && [ -n "$SV_MODE" ]; then
-  PLOT_ENV=",HP_SV_PLOT=$SV_PLOT"
+if [ -n "$SV_MODE" ]; then
+  [ -n "$SV_PLOT" ]    && PLOT_ENV="$PLOT_ENV,HP_SV_PLOT=$SV_PLOT"
+  [ -n "$SV_KEEPBAM" ] && PLOT_ENV="$PLOT_ENV,HP_SV_KEEPBAM=$SV_KEEPBAM"
+  [ -n "$SV_RECALL" ]  && PLOT_ENV="$PLOT_ENV,HP_SV_RECALL=$SV_RECALL"
   for v in HP_SV_PLOT_MINAF HP_SV_PLOT_PASS HP_SV_PLOT_SKIP HP_SV_PLOT_MINSVCONF HP_SV_PLOT_MAX HP_SV_PLOT_DEDUP HP_SV_PLOT_ANNOT; do
     eval "vv=\${$v:-}"; [ -n "$vv" ] && PLOT_ENV="$PLOT_ENV,$v=$vv"
   done
@@ -113,23 +123,32 @@ if ! command -v apptainer > /dev/null 2>&1; then
     exit 1
 fi
 
-# Check for input data
-if [ ! -d "$WORKING_DIR/bams" ] && [ ! -d "$WORKING_DIR/crams" ]; then
-    echo "Error: Neither 'bams' nor 'crams' directory found in $WORKING_DIR" >&2
-    exit 1
-fi
-
-# Determine data directory: prefer a populated bams/, else a populated crams/. crams/ is a
-# documented input, so it must NOT be hardcoded to bams (a crams-only working dir would
-# otherwise look at a nonexistent bams/ and find zero inputs).
-if [ -d "$WORKING_DIR/bams" ] && find "$WORKING_DIR/bams" -name "*.bam" 2>/dev/null | head -1 | grep -q .; then
-    DATA_DIR="bams"
-elif [ -d "$WORKING_DIR/crams" ] && find "$WORKING_DIR/crams" -name "*.cram" 2>/dev/null | head -1 | grep -q .; then
-    DATA_DIR="crams"
-elif [ -d "$WORKING_DIR/bams" ]; then
-    DATA_DIR="bams"   # exists but empty — let the input-list step below report the error
+# RE-CALL mode uses the persisted out/*.sv.bam, not the raw input — require out/ instead of bams/crams.
+if [ -n "$SV_RECALL" ]; then
+    if [ ! -d "$WORKING_DIR/out" ]; then
+        echo "Error: HP_SV_RECALL set but no '$WORKING_DIR/out' (run once with HP_SV_KEEPBAM=1 first)" >&2
+        exit 1
+    fi
+    DATA_DIR="bams"   # placeholder for the --env line; unused by the re-call path
 else
-    DATA_DIR="crams"
+    # Check for input data
+    if [ ! -d "$WORKING_DIR/bams" ] && [ ! -d "$WORKING_DIR/crams" ]; then
+        echo "Error: Neither 'bams' nor 'crams' directory found in $WORKING_DIR" >&2
+        exit 1
+    fi
+
+    # Determine data directory: prefer a populated bams/, else a populated crams/. crams/ is a
+    # documented input, so it must NOT be hardcoded to bams (a crams-only working dir would
+    # otherwise look at a nonexistent bams/ and find zero inputs).
+    if [ -d "$WORKING_DIR/bams" ] && find "$WORKING_DIR/bams" -name "*.bam" 2>/dev/null | head -1 | grep -q .; then
+        DATA_DIR="bams"
+    elif [ -d "$WORKING_DIR/crams" ] && find "$WORKING_DIR/crams" -name "*.cram" 2>/dev/null | head -1 | grep -q .; then
+        DATA_DIR="crams"
+    elif [ -d "$WORKING_DIR/bams" ]; then
+        DATA_DIR="bams"   # exists but empty — let the input-list step below report the error
+    else
+        DATA_DIR="crams"
+    fi
 fi
 
 echo "MitoHPC Batch Container Processing"
@@ -140,11 +159,17 @@ echo "Number of threads: $NUM_THREADS"
 echo "Container image: $CONTAINER_IMAGE"
 echo "SV calling (HP_SV): ${SV_MODE:-off (disabled)}"
 echo "SV visualization (samplot, HP_SV_PLOT): ${SV_PLOT:+on}${SV_PLOT:-off (disabled)}"
+echo "SV keep-BAM (HP_SV_KEEPBAM): ${SV_KEEPBAM:+on}${SV_KEEPBAM:-off}"
+echo "SV re-call mode (HP_SV_RECALL): ${SV_RECALL:+ON — re-running SV only on persisted out/*.sv.bam}${SV_RECALL:-off}"
 echo
 
-# Count input files (group the -name alternation so any future trailing predicate binds to both)
-FILE_COUNT=$(find "$WORKING_DIR/$DATA_DIR" \( -name "*.bam" -o -name "*.cram" \) | wc -l)
-echo "Found $FILE_COUNT input files to process"
+if [ -n "$SV_RECALL" ]; then
+    echo "Re-calling SV on persisted BAMs under $WORKING_DIR/out ($(find "$WORKING_DIR/out" -name '*.sv.bam' 2>/dev/null | wc -l) found)"
+else
+    # Count input files (group the -name alternation so any future trailing predicate binds to both)
+    FILE_COUNT=$(find "$WORKING_DIR/$DATA_DIR" \( -name "*.bam" -o -name "*.cram" \) | wc -l)
+    echo "Found $FILE_COUNT input files to process"
+fi
 
 # Create output directory
 mkdir -p "$WORKING_DIR/out"
@@ -190,6 +215,19 @@ if [ -r "$HP_SDIR/resource_budget.sh" ]; then
     resource_budget "$NUM_THREADS"
 else
     echo "[mitohpc] note: resource_budget.sh not in image; using init.sh per-sample defaults (HP_P=$HP_P)" >&2
+fi
+
+# RE-CALL FAST PATH: re-run ONLY the SV caller (+ visualization + report) on the persisted
+# out/*.sv.bam (kept earlier via HP_SV_KEEPBAM), skipping the entire realign/SNV pipeline. Then exit.
+if [ -n "${HP_SV_RECALL:-}" ]; then
+    echo "[mitohpc] SV RE-CALL: re-running SV only on persisted BAMs in $HP_ODIR (skipping realign/SNV)"
+    if [ -r "$HP_SDIR/recallSV.sh" ]; then
+        bash "$HP_SDIR/recallSV.sh" "$HP_ODIR" "$NUM_THREADS"
+        echo "Processing completed successfully"
+        exit 0
+    fi
+    echo "Error: HP_SV_RECALL set but recallSV.sh is not in this image (rebuild :sv-calling)" >&2
+    exit 1
 fi
 
 # Generate input file

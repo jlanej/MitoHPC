@@ -107,3 +107,14 @@ echo "[callSV] $S -> $O.sv.vcf ($(grep -vc '^#' "$O.sv.vcf") records)" >&2
 if [ -n "${HP_SV_PLOT:-}" ]; then
   bash "$SDIR/svplot.sh" "$S" "$BAM" "$O" || echo "[callSV] WARNING: svplot failed for $S" >&2
 fi
+
+# optionally PERSIST the circular-aware BAM (default-off via HP_SV_KEEPBAM) so the SV caller can be
+# re-run later via recallSV.sh WITHOUT the expensive subsample/realign/SNV front end. filter.sh deletes
+# $O.bam* next; the copy uses the $O.sv.bam prefix, which its `rm -f $O.bam*` glob does not match, so it
+# survives. The `$BAM != $O.sv.bam` guard avoids self-copy when recallSV.sh re-runs ON the persisted BAM.
+if [ -n "${HP_SV_KEEPBAM:-}" ] && [ "$BAM" != "$O.sv.bam" ]; then
+  cp -f "$BAM" "$O.sv.bam"
+  if   [ -s "$BAM.csi" ]; then cp -f "$BAM.csi" "$O.sv.bam.csi"
+  elif [ -s "$BAM.bai" ]; then cp -f "$BAM.bai" "$O.sv.bam.bai"
+  else samtools index "$O.sv.bam" 2>/dev/null || true; fi
+fi
