@@ -261,7 +261,10 @@ When implementing, honor these rules (they operationalize §0):
   and pass `--plot-all` (report wording). Non-PASS / `WRAP` calls are then shown — the status column and
   the §2 origin caveat matter here: a `WRAP`/origin-crossing call renders MISLEADINGLY under samplot's
   linear view (e.g. a genome-spanning "duplication"), so its amber non-PASS status is the disambiguator.
-  Forwarded by `mitohpc-batch-container.sh`.
+  In this mode any call that would ALSO have passed the **default** (non-ALL) filter is written as
+  `${O}.sv.<bp5>_<end>.filterpass.png` instead of `.png`, so the all-plots dump is self-describing on
+  disk (`ls *.filterpass.png` recovers exactly the default-filter subset); the marker is filename-only
+  (manifest records the chosen name) so the embedded report is byte-unaffected. Forwarded by `mitohpc-batch-container.sh`.
 - Output is general VCF/SV best practice (NOT this repo's other VCFs): `##contig`/`##reference`/
   provenance headers, sample-named genotype column, `HOMLEN`/`HOMSEQ`/`DELCLASS`/`CIPOS`/`CIEND`,
   `SVCLAIM`, `COMMON`, `GENE`/`NGENE`, `HGVS`, `FORMAT GT:DP:AD:AF:SR`; VCF 4.2 (negative `SVLEN`).

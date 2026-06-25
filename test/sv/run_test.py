@@ -468,6 +468,20 @@ def check_plots(outdir):
     record("samplot_all_mode", len(cols) >= 9 and '"plotAll":true' in ah and 'status' in ah,
            "HP_SV_PLOT_ALL visualizes the DLOOP call; manifest carries filter/flags; report marks plotAll")
 
+    # .filterpass naming (ALL mode only): a call that would ALSO pass the default filter gets
+    # `.filterpass` embedded in its PNG name; one that would not (the DLOOP call above — skipped by the
+    # default filter) stays plain. The common deletion clears the default filter, so it IS marked.
+    dloop_png = open(aman).readline().split("\t")[6] if os.path.exists(aman) else ""
+    dloop_unmarked = dloop_png.endswith(".png") and ".filterpass." not in dloop_png
+    fpref = os.path.join(outdir, "plotall_sv_del4977_h30")
+    subprocess.run(["bash", os.path.join(SDIR, "callSV.sh"), "sv_del4977_h30",
+                    os.path.join(BAMS, "sv_del4977_h30.bam"), fpref],
+                   env=dict(env, HP_SV_PLOT_ALL="1"), capture_output=True, text=True)
+    fman = fpref + ".sv.plots.tsv"
+    fp_png = open(fman).readline().split("\t")[6] if os.path.exists(fman) else ""
+    record("samplot_filterpass_name", fp_png.endswith(".filterpass.png") and dloop_unmarked,
+           "ALL mode: default-filter-passing call -> .filterpass.png; DLOOP call -> plain .png")
+
 
 def check_dup_inv(outdir):
     """The OPT-IN tandem-DUP (HP_SV_DUP) and INV (HP_SV_INV) call paths. Re-run the forward-looking

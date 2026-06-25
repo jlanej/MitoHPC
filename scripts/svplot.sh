@@ -6,6 +6,10 @@ set -eu
 # after); writes ${O}.sv.<bp5>_<end>.png per selected call and appends the manifest
 # ${O}.sv.plots.tsv (sample, bp5, end, afc, svlen, svconf, png, filter, flags) that getSVSummary.sh
 # collects and svReport.py embeds (png is column 7 for back-compat; filter/flags are appended).
+# In HP_SV_PLOT_ALL mode the filename becomes ${O}.sv.<bp5>_<end>.filterpass.png for any call that
+# would ALSO have passed the default (non-ALL) filter, so the all-plots dump is self-describing on
+# disk (`ls *.filterpass.png` recovers exactly the default-filter subset); the manifest records the
+# chosen name, so the report is unaffected (it embeds the PNG bytes, not the path).
 #
 # DEFAULT-OFF: only runs when HP_SV_PLOT is non-empty (mitohpc-batch-container.sh turns it
 # on; the bare pipeline stays unchanged). Degrades gracefully if samplot is unavailable.
@@ -20,8 +24,9 @@ set -eu
 #   HP_SV_PLOT_MAX=200       safety cap on plots per sample
 #   HP_SV_PLOT_ALL=1         escape hatch: plot EVERY call (flips the PASS/MINAF/SKIP DEFAULTS to
 #                            permissive so nothing is filtered out; an explicitly-set PASS/MINAF/SKIP
-#                            still wins). Pairs with getSVSummary.sh defaulting --plot-dedup to 0, so
-#                            the report embeds them all. Rarely needed; used for the example report.
+#                            still wins). Calls that would have passed the default filter are renamed
+#                            *.filterpass.png (see above). Pairs with getSVSummary.sh defaulting
+#                            --plot-dedup to 0, so the report embeds them all. Used for the example report.
 #
 # Args:  1: sample   2: BAM (live $O.bam)   3: output prefix $O
 #########################################################################################
@@ -69,6 +74,15 @@ else
   MINAF=${HP_SV_PLOT_MINAF:-0.03}
   SKIP=${HP_SV_PLOT_SKIP:-HP,DLOOP,NUMT}
 fi
+# Reference "would-pass-the-default-filter" thresholds = exactly the NON-ALL resolution above. In
+# HP_SV_PLOT_ALL mode every call is plotted, but one that ALSO clears this stricter filter (i.e. one
+# the default mode would have plotted) gets `.filterpass` embedded in its PNG name, so the all-plots
+# dump is self-describing on disk (`ls *.filterpass.png` = the default-filter subset). Outside ALL
+# mode these equal PASS/MINAF/SKIP, so every plotted call is trivially filterpass and names are
+# unchanged (the `.filterpass` tag is therefore applied only in ALL mode; see the loop below).
+FP_PASS=${HP_SV_PLOT_PASS:-1}
+FP_MINAF=${HP_SV_PLOT_MINAF:-0.03}
+FP_SKIP=${HP_SV_PLOT_SKIP:-HP,DLOOP,NUMT}
 MINSVCONF=${HP_SV_PLOT_MINSVCONF:-}
 MAX=${HP_SV_PLOT_MAX:-200}
 
@@ -77,20 +91,32 @@ MAX=${HP_SV_PLOT_MAX:-200}
 # filter/flags are carried so the report can label each plot (esp. in HP_SV_PLOT_ALL mode, where non-PASS /
 # WRAP / artifact calls are shown and a viewer needs to know which is which — a WRAP/origin call renders as a
 # misleading genome-spanning event under samplot's linear view).
-awk -F'\t' -v pass="$PASS" -v minaf="$MINAF" -v skip="$SKIP" -v minsc="$MINSVCONF" -v mx="$MAX" '
+awk -F'\t' -v pass="$PASS" -v minaf="$MINAF" -v skip="$SKIP" -v minsc="$MINSVCONF" -v mx="$MAX" \
+          -v fppass="$FP_PASS" -v fpminaf="$FP_MINAF" -v fpskip="$FP_SKIP" '
+  # 1 if the current row clears the (pass,minaf,skip) filter — shared by the plot-selection filter
+  # and the stricter "filterpass" reference filter (minsc is identical in both, read as a global).
+  function passes(pass, minaf, skip,    fl, n, sk, j) {
+    if (pass==1 && $h["filter"]!="PASS") return 0
+    if ($h["af_coverage"]+0 < minaf+0) return 0
+    if (minsc!="" && $h["svconf"]!="." && $h["svconf"]+0 < minsc+0) return 0
+    fl="," $h["flags"] ","
+    n=split(skip,sk,",")
+    for (j=1;j<=n;j++) if (sk[j]!="" && index(fl, "," sk[j] ",")) return 0
+    return 1
+  }
   NR==1{ for(i=1;i<=NF;i++) h[$i]=i; next }
   {
-    if (pass==1 && $h["filter"]!="PASS") next
-    if ($h["af_coverage"]+0 < minaf+0) next
-    if (minsc!="" && $h["svconf"]!="." && $h["svconf"]+0 < minsc+0) next
-    fl="," $h["flags"] ","
-    m=split(skip,sk,","); drop=0
-    for (j=1;j<=m;j++) if (sk[j]!="" && index(fl, "," sk[j] ",")) { drop=1; break }
-    if (drop) next
-    if (++k > mx) next
-    print $h["pos_bp5"] "\t" $h["end_bp3"] "\t" $h["af_coverage"] "\t" $h["svlen"] "\t" $h["svconf"] "\t" $h["filter"] "\t" $h["flags"]
-  }' "$TAB" | while IFS=$'\t' read -r bp5 end afc svlen svconf filter flags; do
-  png="$O.sv.${bp5}_${end}.png"
+    if (!passes(pass, minaf, skip)) next            # plot-selection filter (permissive in ALL mode)
+    if (++k > mx) next                              # per-sample safety cap
+    # trailing field = would this call ALSO pass the default (non-ALL) filter? -> .filterpass naming
+    print $h["pos_bp5"] "\t" $h["end_bp3"] "\t" $h["af_coverage"] "\t" $h["svlen"] "\t" $h["svconf"] "\t" $h["filter"] "\t" $h["flags"] "\t" passes(fppass, fpminaf, fpskip)
+  }' "$TAB" | while IFS=$'\t' read -r bp5 end afc svlen svconf filter flags fp; do
+  # In ALL mode, tag calls that would have passed the default filter so the dump is self-describing.
+  if [ -n "${HP_SV_PLOT_ALL:-}" ] && [ "$fp" = "1" ]; then
+    png="$O.sv.${bp5}_${end}.filterpass.png"
+  else
+    png="$O.sv.${bp5}_${end}.png"
+  fi
   title="$S  m.$((bp5+1))_${end}del  VAF=$afc"
   if "$SAMPLOT" plot -n "$title" -b "$BAM" -o "$png" -c "$MT" -s "$bp5" -e "$end" -t DEL $aopt >/dev/null 2>&1 \
      && [ -s "$png" ]; then
