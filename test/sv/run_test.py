@@ -24,10 +24,11 @@ BAMS = os.path.join(HERE, "bams")
 TRUTH = os.path.join(HERE, "truth.tsv")
 PYEXE = os.environ.get("HP_PYTHON", sys.executable)   # interpreter that has pysam
 
+MTLEN = 16569     # chrM length (the mocks are all chrM/16569)
 BP_TOL = 30       # breakpoint tolerance (>= the del4977 13bp repeat ambiguity)
-SVLEN_TOL = 40
-AF_TOL = 0.15
-HI_HET = 0.10     # >= this heteroplasmy is expected to reach FILTER=PASS
+SVLEN_TOL = 40    # deletion-size tolerance (>= the repeat slide); enforced on PASS/detected del events
+AF_TOL = 0.15     # heteroplasmy tolerance (AFC or AFJ may match)
+# (PASS is required per-fixture via the truth.tsv `expect` column, not a heteroplasmy threshold.)
 
 results = []      # (name, detail, ok)
 
@@ -78,7 +79,19 @@ def fnum(x):
         return None
 
 
+def valid_report(path):
+    """A self-contained svReport HTML: data substituted (no placeholder), both views + calls present."""
+    if not os.path.exists(path):
+        return False
+    h = open(path).read()
+    return ("/*__DATA__*/" not in h and 'id="circ"' in h and 'id="lin"' in h
+            and '"calls":' in h and len(h) > 5000)
+
+
 def load_truth():
+    """truth.tsv -> {name: {"expect": <str>, "events": [<event dict>...]}}. `expect` (col 8) is the
+    behavior the CURRENT deletion-only caller should show today; forward-looking DUP/INV/complex
+    fixtures carry no_pass/no_record/known_fp. See make_testdata.py / docs/SV_EVENT_TYPES.md."""
     samples = {}
     with open(TRUTH) as fh:
         for ln in fh:
@@ -86,11 +99,13 @@ def load_truth():
                 continue
             f = ln.rstrip("\n").split("\t")
             name, kind = f[0], f[1]
-            samples.setdefault(name, [])
+            expect = f[7] if len(f) > 7 else "pass"
+            s = samples.setdefault(name, {"expect": expect, "events": []})
+            s["expect"] = expect
             if kind == "none":                 # wild-type marker, not an event
                 continue
-            samples[name].append({"kind": kind, "bp5": f[2], "bp3": f[3], "svlen": f[4],
-                                  "het": fnum(f[5]) or 0.0, "depth": int(f[6])})
+            s["events"].append({"kind": kind, "bp5": f[2], "bp3": f[3], "svlen": f[4],
+                                "het": fnum(f[5]) or 0.0, "depth": int(f[6])})
     return samples
 
 
@@ -109,8 +124,65 @@ def is_del4977(bp5, bp3):
     return 8460 <= bp5 <= 8490 and 13440 <= bp3 <= 13460
 
 
+SIG_BASELINE = (11000, 12000)   # coverage region untouched by any event (DUP-gain baseline)
+
+
+def _meancov(bam, a, b):
+    with pysam.AlignmentFile(bam, "rb") as f:
+        c = f.count_coverage("chrM", a - 1, b, quality_threshold=0)
+    return sum(c[0][i] + c[1][i] + c[2][i] + c[3][i] for i in range(b - a + 1)) / max(1, b - a + 1)
+
+
+def _sa_first(r):
+    return r.get_tag("SA").split(";")[0].split(",") if r.has_tag("SA") else None
+
+
+def _opp_strand_sa(bam):                # the INVERSION signature: SA segment on the opposite strand
+    n = 0
+    with pysam.AlignmentFile(bam, "rb") as f:
+        for r in f.fetch():
+            if r.is_supplementary or r.is_secondary or r.is_unmapped:
+                continue
+            sa = _sa_first(r)
+            if sa and len(sa) >= 3 and sa[2] != ("-" if r.is_reverse else "+"):
+                n += 1
+    return n
+
+
+def _offorigin_sa(bam):                 # the origin-WRAP signature: a split read linking the two ends
+    n = 0
+    with pysam.AlignmentFile(bam, "rb") as f:
+        for r in f.fetch():
+            if r.is_supplementary:
+                continue
+            sa = _sa_first(r)
+            if not sa or not sa[1].isdigit():
+                continue
+            p = int(sa[1])
+            if (r.reference_start < 300 and p > 16000) or (r.reference_start > 16000 and p < 300):
+                n += 1
+    return n
+
+
+def bam_signature_ok(bam, kind, bp5, bp3):
+    """Independently confirm the mock BAM carries the SIGNAL its kind implies, BEFORE asserting the
+    caller's behavior — so a `no_record`/`no_pass` assertion can't pass merely because the simulator
+    silently produced nothing (e.g. an inversion that lost its opposite-strand reads). (ok, detail)."""
+    if kind in ("inv", "invdup"):
+        n = _opp_strand_sa(bam)
+        return n > 0, "opposite-strand SA=%d" % n
+    if kind in ("dup", "dupdel"):
+        g = _meancov(bam, bp5 + 50, bp3 - 50) / max(1e-9, _meancov(bam, *SIG_BASELINE))
+        return g > 1.15, "arc/baseline coverage=%.2f" % g
+    if kind == "delwrap":
+        n = _offorigin_sa(bam)
+        return n > 0, "off-origin SA=%d" % n
+    return True, ""   # del (incl. the sub-minsize CIGAR-D negative): no independent signal to assert
+
+
 # --------------------------------------------------------------------------- #
-def check_sample(name, events, outdir):
+def check_sample(name, info, outdir):
+    expect, events = info["expect"], info["events"]
     prefix = os.path.join(outdir, name)
     bam = os.path.join(BAMS, name + ".bam")
     if not os.path.exists(bam):
@@ -123,19 +195,36 @@ def check_sample(name, events, outdir):
     rows = read_tab(prefix + ".sv.tab")
     npass = sum(1 for r in rows if r["filter"] == "PASS")
 
-    kinds = {e["kind"] for e in events}
+    # forward-looking fixtures: first confirm the BAM actually carries its intended SV signal, so a
+    # 0-record / 0-PASS result can't pass for the wrong reason (a silently broken simulator).
+    if expect in ("no_record", "no_pass", "wrap", "known_fp") and events:
+        e0 = events[0]
+        sok, sdet = bam_signature_ok(bam, e0["kind"], int(e0["bp5"]), int(e0["bp3"]))
+        if not sok:
+            record(name, False, "simulator did not produce the %s signal (%s)" % (e0["kind"], sdet))
+            return
 
-    # negative / not-a-deletion samples: must yield zero PASS records
-    if not events:                                  # wild-type
-        record(name, npass == 0, "wild-type: %d PASS (want 0)" % npass)
+    # --- expectation-driven outcomes for the non-deletion / forward-looking classes ---
+    if expect == "no_record":            # INV (strand-filtered, CN-neutral) / sub-minsize del / fold-back
+        record(name, len(rows) == 0, "want 0 records, got %d" % len(rows))
         return
-    if kinds & {"dup", "delwrap"}:                  # duplication / origin-crossing
-        ok = npass == 0
-        record(name, ok, "%s: %d PASS (want 0), %d non-PASS records"
-               % ("/".join(kinds), npass, len(rows)))
+    if expect == "no_pass":              # tandem DUP / controls: detected-but-not-PASS or nothing
+        record(name, npass == 0, "want 0 PASS, got %d (%d records)" % (npass, len(rows)))
+        return
+    if expect == "wrap":                 # origin-crossing: 0 PASS + a WRAP-flagged MAJORITY-ARC record
+        wraprec = [r for r in rows if "WRAP" in r.get("flags", "") and int(r["svlen"]) > MTLEN // 2]
+        record(name, npass == 0 and len(wraprec) >= 1,
+               "want 0 PASS + WRAP majority-arc record; %d PASS, wrap-recs=%d" % (npass, len(wraprec)))
+        return
+    if expect == "known_fp":             # KNOWN GAP: dup-del's EMBEDDED deletion spuriously PASSes today
+        fp = match_del(rows, 6000, 6501)   # the internal del [6000..6500] (see make_testdata sv_dupdel)
+        ok = fp is not None and fp["filter"] == "PASS"
+        record(name, ok, "KNOWN-GAP: embedded del m.6000_6500 PASSes (to be fixed by the DUP-aware "
+               "caller); matched_PASS=%s" % ok)
         return
 
-    # deletion sample(s): every truth deletion must be detected with correct fields
+    # --- expect in {pass, detected}: each truth deletion must be detected with correct fields ---
+    require_pass = (expect == "pass")
     all_ok, details = True, []
     for e in events:
         bp5, bp3, het = int(e["bp5"]), int(e["bp3"]), e["het"]
@@ -155,12 +244,15 @@ def check_sample(name, events, outdir):
         if not errs or min(errs) > AF_TOL:
             all_ok = False
             sub.append("AFC=%s/AFJ=%s vs het=%.2f" % (m["af_coverage"], m["af_junction"], het))
-        if het >= HI_HET and m["filter"] != "PASS":
+        if abs(int(m["svlen"]) - int(e["svlen"])) > SVLEN_TOL:
+            all_ok = False
+            sub.append("svlen=%s vs truth %s" % (m["svlen"], e["svlen"]))
+        if require_pass and m["filter"] != "PASS":
             all_ok = False
             sub.append("want PASS got %s" % m["filter"])
         # split-read evidence lens: a true simulated deletion is a clean, consistent junction, so it
         # must be JSUP HIGH/MOD (not the LOW artifact tier) with high size-consistency.
-        if m.get("jsup") == "LOW" or fnum(m.get("srcons")) is not None and fnum(m["srcons"]) < 0.7:
+        if m.get("jsup") == "LOW" or (fnum(m.get("srcons")) is not None and fnum(m["srcons"]) < 0.7):
             all_ok = False
             sub.append("JSUP=%s SRCONS=%s (want HIGH/MOD)" % (m.get("jsup"), m.get("srcons")))
         if is_del4977(bp5, bp3):
@@ -244,13 +336,8 @@ def check_cohort(outdir, names):
            "merge+sites valid, recurrence(NS>=2)=%s" % recur)
 
     # the interactive HTML report (svReport.py; emitted by getSVSummary.sh)
-    rep = os.path.join(outdir, "sv.report.html")
-    rok = False
-    if os.path.exists(rep):
-        h = open(rep).read()
-        rok = ("/*__DATA__*/" not in h and 'id="circ"' in h and 'id="lin"' in h
-               and '"calls":' in h and len(h) > 5000)
-    record("html_report", rok, "self-contained interactive report" if rok else "missing/invalid")
+    record("html_report", valid_report(os.path.join(outdir, "sv.report.html")),
+           "self-contained interactive report")
 
 
 def check_examples(outdir):
@@ -261,13 +348,8 @@ def check_examples(outdir):
         print("\n[committed examples — SKIPPED (test/sv/example/ not present)]")
         return
     print("\n[committed examples — schema in sync with current code]")
-    rep = os.path.join(EX, "sv.report.html")
-    hok = os.path.exists(rep)
-    if hok:
-        h = open(rep).read()
-        hok = ("/*__DATA__*/" not in h and 'id="circ"' in h and 'id="lin"' in h
-               and '"calls":' in h and len(h) > 5000)
-    record("example_report", hok, "interactive report present + valid")
+    record("example_report", valid_report(os.path.join(EX, "sv.report.html")),
+           "interactive report present + valid")
 
     fresh_tab = os.path.join(outdir, "sv_del4977_h30.sv.tab")
     ex_tab = os.path.join(EX, "sv.tab")

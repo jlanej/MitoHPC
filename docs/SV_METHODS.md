@@ -705,8 +705,7 @@ re-implementing it — but note (third bullet) this is detection input, not full
 - Relatedly, v1 **does not** *resolve* a circular deletion into its true (smaller) origin-crossing
   arc; it only withholds it — such junctions are `WRAP`-flagged and kept out of PASS (full resolution,
   and del-vs-complementary-arc-duplication disambiguation via origin-preservation, deferred to a future
-  tier — design captured in [`SV_DELDUP_RESOLUTION.md`](SV_DELDUP_RESOLUTION.md); roadmap in
-  `SV_CALLING.md` §10).
+  tier — design captured in [`SV_EVENT_TYPES.md`](SV_EVENT_TYPES.md) §5; roadmap in `SV_CALLING.md` §10).
 
 ---
 
@@ -738,30 +737,28 @@ bash test/sv/run_test.sh        # -> ALL TESTS PASSED
 known heteroplasmy (so the coverage ratio outside vs inside a deletion equals the spiked fraction by
 construction); `gen_bams.sh` aligns them through the pipeline's own circular path
 (`minimap2 -ax sr → samtools view -F 0x90C → circSam.pl → sort`) to produce faithful `$O.bam`
-files (committed, ~13 MB total). `run_test.py` (invoked by `run_test.sh`) runs the caller and checks
-calls against `truth.tsv`, then exercises degenerate inputs and (when `bcftools` is present) cohort
-aggregation, a VCF-spec gate, and a schema check on the committed `example/` outputs. **24 checks**:
+files (committed, ~31 MB total — **21 mock BAMs**). `run_test.py` (invoked by `run_test.sh`) runs the
+caller and checks each call against `truth.tsv`'s per-fixture `expect`, then exercises degenerate inputs
+and (when `bcftools` is present) cohort aggregation, a VCF-spec gate, and a schema check on the committed
+`example/` outputs (current totals print at the end of a run, ~40 checks):
 
-| Scenario | What it verifies |
+| Scenario group | What it verifies |
 |---|---|
-| del4977 @30% / @5% | PASS + `REPEAT`/`COMMON`/`HOMLEN=13`/`DELCLASS=I`/genes; low-het → `no_cvg_drop` tier |
-| non-repeat deletion @50% | PASS, no `REPEAT`, `DELCLASS` from incidental microhomology |
-| **multiple deletions** | both deletions detected as separate PASS records (no merge/cross-talk) |
-| **near-homoplasmy @95%** | PASS, `AFJ→1.0` (no divide-by-zero) |
-| **tandem duplication** | **zero PASS** (coverage *gain*, `CVGR>1` → `no_cvg_drop`) |
-| **origin-crossing deletion** | **zero PASS**, all coords ≤ contig length (valid VCF) |
-| D-loop breakpoint | PASS + `DLOOP` flag |
-| low coverage (40×) | still detected (cohort depth variability) |
-| wild-type | 0 PASS (specificity) |
+| **deletions** — del4977 @30/5%, non-repeat @50%, multi-del, near-homoplasmy @95%, D-loop, low-cov (40×), `del_500` (small detectable), `del_45` (< minsize → 0 records), `del_13kb` (majority-arc **with** drop → PASS via dosage) | breakpoints (`BP_TOL`), size (`SVLEN_TOL`), `AFC`/`AFJ` (`AF_TOL`), per-fixture PASS, `COMMON`/`REPEAT`/`HOMLEN`/`DELCLASS`/genes, `DLOOP` flag |
+| **origin-crossing** — `sv_origin` (clips OriH) / `sv_del_origin_spares` (spares) | 0 PASS + a `WRAP` **majority-arc** record (withheld), all coords ≤ contig |
+| **duplications** — `sv_dup` (1 kb), `sv_dup_large` (5 kb) tandem | 0 PASS (coverage *gain* blocks the DEL-shaped record) |
+| **complex** — `sv_dupdel` (partial dup-del), `sv_invdup` (fold-back) | dup-del's embedded del **spuriously PASSes** today (`known_fp`, a documented gap); inv-dup → 0 records |
+| **inversions** — `sv_inv_small/large/origin/lowhet` | **0 records** (opposite-strand `SA` strand-filtered; CN-neutral) — invisibility is size/het/position-independent |
+| **signature pre-assertion** | each forward-looking BAM is confirmed to carry its signal (opposite-strand `SA` / coverage gain / off-origin `SA`) before its behavior is asserted |
 | **degenerate inputs** | empty BAM → 0 records; unindexed/wrong-contig/wrong-`mtlen` → clean one-line error, **never a traceback** |
 | **cohort** | `getSVSummary.sh` builds the merge matrix + sites union; recurrence (`NS≥2`) detected |
 | **VCF spec** | `bcftools view` accepts every per-sample VCF (no undefined-contig/INFO warnings) |
-| **real-data specificity** | committed **1000G high-coverage** chrM (healthy: `test/sv/real/NA*.chrM.bam`) → **0 PASS** — a real-world false-positive guard (real NUMT/D-loop/error structure) the mocks cannot give |
-| **real-background positive control** | **del4977 spiked into a real WT background** (`test/sv/real/spike_del4977_h20.chrM.bam`, via `gen_spike.sh`) → recovered **PASS + `COMMON`**, `AFC`≈truth, **no off-target PASS** — real error/coverage + known truth |
+| **real-data specificity** | committed **1000G high-coverage** chrM (healthy: `test/sv/real/NA*.chrM.bam`) → **0 PASS** — a real-world false-positive guard the mocks cannot give |
+| **real-background positive control** | **del4977 spiked into a real WT background** (`test/sv/real/spike_del4977_h20.chrM.bam`) → recovered **PASS + `COMMON`**, `AFC`≈truth, no off-target PASS |
 
-24 checks total (20 scenarios + 3 healthy real-data specificity + 1 del4977-into-real-background
-positive control). See [`../test/sv/README.md`](../test/sv/README.md) and
-[`../test/sv/real/README.md`](../test/sv/real/README.md) for layout and regeneration.
+The DUP/INV/complex fixtures are forward-looking (design in [`SV_EVENT_TYPES.md`](SV_EVENT_TYPES.md));
+see [`../test/sv/TEST_BAMS.md`](../test/sv/TEST_BAMS.md) for the full catalog and
+[`../test/sv/real/README.md`](../test/sv/real/README.md) for the real-data layout.
 
 ### 10.1 Quantitative LoD &amp; accuracy evaluation (`lod_sweep.py` + `lod_report.py`)
 

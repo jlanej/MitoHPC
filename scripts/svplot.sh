@@ -79,7 +79,7 @@ MAX=${HP_SV_PLOT_MAX:-200}
 # misleading genome-spanning event under samplot's linear view).
 awk -F'\t' -v pass="$PASS" -v minaf="$MINAF" -v skip="$SKIP" -v minsc="$MINSVCONF" -v mx="$MAX" '
   NR==1{ for(i=1;i<=NF;i++) h[$i]=i; next }
-  { n++
+  {
     if (pass==1 && $h["filter"]!="PASS") next
     if ($h["af_coverage"]+0 < minaf+0) next
     if (minsc!="" && $h["svconf"]!="." && $h["svconf"]+0 < minsc+0) next

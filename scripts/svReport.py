@@ -19,6 +19,7 @@ import datetime
 import gzip
 import json
 import os
+import sys
 
 
 # --- mtDNA feature -> functional category (OXPHOS complex / RNA / control) ---
@@ -38,7 +39,7 @@ def category(name):
     n = name.upper()
     if n.startswith("ND"):
         return "ci"
-    if n.startswith("COX") or n.startswith("CO") and n[2:3].isdigit():
+    if n.startswith("COX") or (n.startswith("CO") and n[2:3].isdigit()):
         return "civ"
     if n.startswith("ATP"):
         return "cv"
@@ -205,7 +206,6 @@ def main():
     html = TEMPLATE.replace("/*__DATA__*/", json.dumps(data, separators=(",", ":")))
     with open(args.out, "w") as fh:
         fh.write(html)
-    import sys
     sys.stderr.write("[svReport] %d calls, %d samples, %d plots -> %s\n"
                      % (len(calls), nsamp, len(plots), args.out))
 

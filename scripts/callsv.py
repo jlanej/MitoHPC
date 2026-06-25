@@ -304,13 +304,13 @@ def extract_junctions(bam, chrom, minmapq, minsize, maxsize, pad, minsupport, mt
 
     candidates = []   # [bp5, bp3, svlen, strand, tids, srcons, srsb]
     for c in clusters:
-        pts = c["pts"]
-        tids = {p[2] for p in pts}
+        cpts = c["pts"]                                     # this cluster's junction points
+        tids = {p[2] for p in cpts}
         if len(tids) < minsupport:
             continue
-        bp5 = mode([p[0] for p in pts])
-        bp3 = mode([p[1] for p in pts])
-        strand = mode([p[3] for p in pts])
+        bp5 = mode([p[0] for p in cpts])
+        bp3 = mode([p[1] for p in cpts])
+        strand = mode([p[3] for p in cpts])
         if not (1 <= bp5 <= mtlen and 1 <= bp3 <= mtlen):   # keep VCF POS/END within the contig
             continue
         svlen = bp3 - bp5 - 1
@@ -323,11 +323,11 @@ def extract_junctions(bam, chrom, minmapq, minsize, maxsize, pad, minsupport, mt
         #     scattered sizes (mapping noise) score low. This is what makes a tight 4-5 read cluster
         #     credible vs a same-count smear of artifacts.
         #   srsb   = strand balance min(+,-)/total (0 = one-strand-only, a classic artifact signature).
-        sizes = [p[1] - p[0] - 1 for p in pts]
+        sizes = [p[1] - p[0] - 1 for p in cpts]
         msize = mode(sizes)
         srcons = sum(1 for v in sizes if abs(v - msize) <= srtol) / len(sizes)
-        nf = sum(1 for p in pts if p[3] == "+")
-        srsb = min(nf, len(pts) - nf) / len(pts)
+        nf = sum(1 for p in cpts if p[3] == "+")
+        srsb = min(nf, len(cpts) - nf) / len(cpts)
         candidates.append([bp5, bp3, svlen, strand, set(tids), srcons, srsb])
 
     # Soft-clip harvesting (REINFORCE-ONLY): a deletion read whose clipped arm is too short for the

@@ -232,11 +232,12 @@ dependency).
 > documented in **[`SV_METHODS.md`](SV_METHODS.md)**. The output is general VCF/SV best practice
 > (`##contig`/`##reference`/provenance, sample-named column, `HOMLEN`/`DELCLASS`/`CIPOS`, `SVCLAIM`,
 > affected `GENE`s, `COMMON`, `HGVS`, cohort `bcftools merge` recurrence matrix + sites union).
-> Evaluated by **20 checks** in `test/sv/` (`bash test/sv/run_test.sh`): the common deletion at
-> 30%/5%, a non-repeat deletion, **multiple concurrent deletions**, near-homoplasmy, **tandem
-> duplication and origin-crossing both correctly not PASSed**, a D-loop-flagged deletion, low
-> coverage, wild-type specificity, degenerate-input robustness (no tracebacks), cohort recurrence,
-> and a `bcftools` VCF-spec gate.
+> Evaluated by `bash test/sv/run_test.sh` over **21 committed mock BAMs** (~40 checks): deletions
+> across a size range (45 bp→13 kb, repeat/non-repeat, multi-deletion, near-homoplasmy, D-loop,
+> low-coverage), **tandem duplications and origin-crossing both correctly not PASSed**, plus
+> forward-looking **duplication / inversion / complex** fixtures (design in `SV_EVENT_TYPES.md`;
+> mostly 0-record / 0-PASS until those paths land), wild-type specificity, degenerate-input
+> robustness (no tracebacks), cohort recurrence, a `bcftools` VCF-spec gate, and real-data vetting.
 
 A blend that takes **B's signal source** (recompute a clean split-read signal from the **live
 `$O.bam`**, since we must hook in before BAM cleanup anyway — this is the "build our own, better
@@ -326,9 +327,9 @@ coverage-dropout gate already biases toward true deletions).
   (`filter.sh:94-101` trick); (e) optional **`HP_SV=eklipse`** engine behind the same flag with a
   `fixeklipseVcf.pl` shim into the identical `$O.sv` namespace; (f) un-subsampled SV path for very
   low heteroplasmy.
-- **v3 — event richness & cross-platform:** (a) **DEL-vs-complementary-arc-DUP disambiguation**
-  (MitoSAlt OriH/OriL logic) using the existing `chrMR` — **design note: [`SV_DELDUP_RESOLUTION.md`](SV_DELDUP_RESOLUTION.md)**;
-  (b) multiple/concurrent deletions + basic
+- **v3 — event richness & cross-platform** — full design in **[`SV_EVENT_TYPES.md`](SV_EVENT_TYPES.md)**
+  (DUP/INV/complex + origin-resolution, harmonized): (a) **DEL-vs-complementary-arc-DUP disambiguation**
+  (MitoSAlt OriH/OriL logic); (b) multiple/concurrent deletions + basic
   junction phasing; (c) inversions/insertions where `SA` orientation supports them; (d) optional
   **long-read engine** (`HP_SV=sniffles` over NGMLR/minimap2) for complex/duplicated
   rearrangements; (e) annotate against **MITOMAP/MitoBreak** for known-vs-novel flagging. Each is a

@@ -7,9 +7,9 @@ Self-contained, real-time evaluation of the MitoHPC structural-variant caller
 
 | Path | Committed | Purpose |
 |---|---|---|
-| `bams/*.bam(.csi)` | ✅ (~13 MB total) | Mock `$O.bam`-equivalents: circular-aware chrM alignments carrying split-read junctions + coverage signal |
-| `truth.tsv` | ✅ | Ground truth per (sample, event): `sample kind bp5 bp3 svlen het depth` |
-| `make_testdata.py` | ✅ | Read simulator: WT + per-event circular genomes (deletion / duplication / origin-crossing) → FASTQ |
+| `bams/*.bam(.csi)` | ✅ (21 BAMs, ~31 MB total) | Mock `$O.bam`-equivalents: circular-aware chrM alignments carrying split-read junctions + coverage signal |
+| `truth.tsv` | ✅ | Ground truth per (sample, event): `sample kind bp5 bp3 svlen het depth expect` (`expect` = today's caller behavior) |
+| `make_testdata.py` | ✅ | Read simulator: WT + per-event circular genomes (deletion / duplication / inversion / inverted-dup / dup-del / origin-crossing) → FASTQ |
 | `gen_bams.sh` | ✅ | Aligns FASTQ → BAM through the pipeline's circular path (minimap2 → `circSam.pl` → sort) |
 | `run_test.py` | ✅ | The harness (python3 + pysam): scenarios vs `truth.tsv`, degenerate inputs, cohort, VCF-spec gate, example-schema check |
 | `run_test.sh` | ✅ | Thin wrapper → `run_test.py` |
@@ -17,22 +17,23 @@ Self-contained, real-time evaluation of the MitoHPC structural-variant caller
 | `make_example.sh` | ✅ | Regenerates `example/` from the mock BAMs (paths sanitized to repo-relative) |
 | `fastq/`, `out/` | ❌ (gitignored) | Regenerable intermediates |
 
-## Samples (10) + robustness checks
+## Samples (21) + robustness checks
 
-> **[`TEST_BAMS.md`](TEST_BAMS.md) details every BAM** — what each one is, *why* that scenario exists
-> (the caller behavior it pins down), and what the harness asserts. The table below is the summary.
+> **[`TEST_BAMS.md`](TEST_BAMS.md) is the authoritative catalog** of all 21 mock BAMs — what each one
+> is, *why* that scenario exists (the caller behavior it pins down), and what the harness asserts.
+> Below is the at-a-glance grouping.
 
-| Sample | Construction | Checks |
-|---|---|---|
-| `sv_del4977_h30` / `_h05` | common deletion @30% / @5% | PASS + `REPEAT`/`COMMON`/`HOMLEN=13`/`DELCLASS=I`/genes; 5% → `no_cvg_drop` tier |
-| `sv_del6000_h50` | non-repeat deletion @50% | PASS, no `REPEAT`/`COMMON` |
-| `sv_multidel` | **two** deletions (del4977 + del6000) | both detected as separate PASS records |
-| `sv_homoplasmy` | common deletion @95% | PASS, `AFJ→1.0`, no divide-by-zero |
-| `sv_dup` | tandem duplication | **zero PASS** (`CVGR>1` → `no_cvg_drop`) |
-| `sv_origin` | origin-crossing deletion | **zero PASS**, all coords ≤ contig (valid VCF) |
-| `sv_dloop` | 5′ breakpoint in the D-loop | PASS + `DLOOP` flag |
-| `sv_lowcov` | common deletion @50%, 40× depth | still detected |
-| `sv_wt` | wild-type | 0 PASS (specificity) |
+- **Deletions (PASS-able):** `sv_del4977_h30/h05` (common, 30/5%), `sv_del6000_h50` (non-repeat),
+  `sv_multidel` (two), `sv_homoplasmy` (95%), `sv_dloop` (D-loop flag), `sv_lowcov` (40×), `sv_del_500`
+  (small detectable), `sv_del_45` (< minsize → 0 records), `sv_del_13kb` (majority-arc w/ drop → PASS).
+- **Origin-crossing (WRAP-withheld):** `sv_origin` (clips OriH), `sv_del_origin_spares` (spares) — the
+  [origin-resolution](../docs/SV_EVENT_TYPES.md) regression pair.
+- **Forward-looking (not yet callable; design in [`../docs/SV_EVENT_TYPES.md`](../docs/SV_EVENT_TYPES.md)):**
+  duplications `sv_dup` (1 kb) / `sv_dup_large` (5 kb); complex `sv_dupdel` (a documented spurious-PASS
+  gap) / `sv_invdup`; inversions `sv_inv_small/large/origin/lowhet` (0 records — the strand-filter blind
+  spot). Each carries an `expect` in `truth.tsv`; a signature pre-assertion confirms the BAM really
+  holds its signal first.
+- **Control:** `sv_wt` (wild-type specificity, also the degenerate-input substrate).
 
 Plus: degenerate inputs (empty / unindexed / wrong-contig / wrong-`mtlen` BAM → clean error, never a
 traceback), cohort aggregation (`getSVSummary.sh` merge matrix + sites + recurrence), and a

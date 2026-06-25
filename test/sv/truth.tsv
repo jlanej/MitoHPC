@@ -1,12 +1,23 @@
-#sample	kind	bp5	bp3	svlen	het	depth
-sv_del4977_h30	del	8469	13447	4977	0.300	300
-sv_del4977_h05	del	8469	13447	4977	0.050	400
-sv_del6000_h50	del	5999	10999	4999	0.500	300
-sv_wt	none	.	.	.	0	300
-sv_multidel	del	8469	13447	4977	0.250	400
-sv_multidel	del	5999	10999	4999	0.150	400
-sv_homoplasmy	del	8469	13447	4977	0.950	300
-sv_dup	dup	6000	7000	0	0.500	300
-sv_origin	delwrap	16400	200	368	0.400	400
-sv_dloop	del	400	6000	5599	0.400	300
-sv_lowcov	del	8469	13447	4977	0.500	40
+#sample	kind	bp5	bp3	svlen	het	depth	expect
+sv_del4977_h30	del	8469	13447	4977	0.300	300	pass
+sv_del4977_h05	del	8469	13447	4977	0.050	400	detected
+sv_del6000_h50	del	5999	10999	4999	0.500	300	pass
+sv_multidel	del	8469	13447	4977	0.250	400	pass
+sv_multidel	del	5999	10999	4999	0.150	400	pass
+sv_homoplasmy	del	8469	13447	4977	0.950	300	pass
+sv_dloop	del	400	6000	5599	0.400	300	pass
+sv_lowcov	del	8469	13447	4977	0.500	40	pass
+sv_del_500	del	8000	8501	500	0.500	300	pass
+sv_del_45	del	9000	9046	45	0.500	300	no_record
+sv_del_13kb	del	2000	15001	13000	0.600	300	pass
+sv_dup	dup	6000	7000	1001	0.500	300	no_pass
+sv_dup_large	dup	4000	9000	5001	0.500	300	no_pass
+sv_dupdel	dupdel	5000	8000	3001	0.400	400	known_fp
+sv_invdup	invdup	7000	7400	401	0.400	400	no_record
+sv_inv_small	inv	6000	6500	501	0.500	300	no_record
+sv_inv_large	inv	5000	9000	4001	0.500	300	no_record
+sv_inv_origin	inv	16300	16560	261	0.400	400	no_record
+sv_inv_lowhet	inv	8000	9000	1001	0.050	300	no_record
+sv_origin	delwrap	16400	200	368	0.400	400	wrap
+sv_del_origin_spares	delwrap	16400	100	268	0.400	400	wrap
+sv_wt	none	.	.	.	0	300	no_pass

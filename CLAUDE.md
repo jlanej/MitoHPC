@@ -194,9 +194,11 @@ When implementing, honor these rules (they operationalize §0):
   algorithm primitives, and the phased implementation plan for MitoHPC).
 - Method as implemented (keep in sync with the code): **`docs/SV_METHODS.md`** — intuitive but
   precise description of `callsv.py`/`callSV.sh`, formulas, schema, parameters.
-- Deferred-feature design note: **`docs/SV_DELDUP_RESOLUTION.md`** — plan to resolve the circular
-  DEL-vs-complementary-arc-DUP ambiguity via MitoSAlt-style origin (OriH/OriL) preservation, turning
-  today's `WRAP`-withheld origin-crossing junctions into opt-in DEL/DUP calls. NOT implemented.
+- Future event-type spec (the harmonized spot for all deferred SV work): **`docs/SV_EVENT_TYPES.md`** —
+  unified design for calling **duplications, inversions, and complex (dup-del / inverted-dup) events**
+  plus the circular DEL-vs-DUP **origin-preservation** resolution. Orientation×coverage taxonomy,
+  per-event detection/quantification, pitfalls, schema, phased roadmap, and the forward-looking test
+  mapping. DEL is implemented; everything else here is designed, NOT yet built.
 - Existing pipeline outputs/legend: `README.md` (the `## OUTPUT ##` section is the list of frozen
   deliverables).
 - Test fixtures: `examples1/`, `examples2/`.
@@ -269,13 +271,17 @@ When implementing, honor these rules (they operationalize §0):
   visualization defaults ON and is configured/forwarded by `mitohpc-batch-container.sh`
   (`HP_SV_PLOT` enable + `HP_SV_PLOT_*` filter), so a default batch run also produces the samplot
   gallery; `HP_SV_KEEPBAM`/`HP_SV_RECALL` (re-run speedup) are forwarded too; the bare pipeline is unchanged.
-- Tests/mock data: **`test/sv/`** — `run_test.py` (via `run_test.sh`) runs 24 checks (+2 samplot
-  visualization checks when `samplot` is on PATH, e.g. inside the image): 10 mock
-  scenarios (multi-deletion, near-homoplasmy, tandem-dup-not-called, origin-crossing, D-loop,
-  low-coverage, …) against committed mock BAMs (`test/sv/bams/`, ~13 MB), degenerate inputs, cohort
-  recurrence, a `bcftools` VCF-spec gate, a schema check on the committed example outputs, plus
-  real-data vetting under `test/sv/real/`: 3 healthy 1000G high-cov chrM → 0 PASS (specificity) and a
-  del4977 spiked into a real WT background → recovered PASS+COMMON (positive control). The v2 caller
+- Tests/mock data: **`test/sv/`** — `run_test.py` (via `run_test.sh`; current totals are whatever the
+  run prints, ~40 checks, +3 samplot checks when `samplot` is on PATH) covers **21 committed mock BAMs**
+  (`test/sv/bams/`, ~31 MB) spanning **deletions** (size range 45 bp→13 kb, repeat/non-repeat,
+  multi-deletion, near-homoplasmy, D-loop, low-coverage), **duplications** (tandem small/large),
+  **complex** (dup-del, fold-back inv-dup), **inversions** (small/large/near-origin/low-het), and the
+  **origin-crossing** pair — each asserting its `expect` from `truth.tsv` (the DUP/INV/complex fixtures
+  are forward-looking, mostly `no_record`/`no_pass`/`known_fp` until those paths land; see
+  `docs/SV_EVENT_TYPES.md` + `test/sv/TEST_BAMS.md`). Plus degenerate inputs, cohort recurrence, a
+  `bcftools` VCF-spec gate, a schema check on the committed example outputs, and real-data vetting under
+  `test/sv/real/`: 3 healthy 1000G high-cov chrM → 0 PASS (specificity) and a del4977 spiked into a real
+  WT background → recovered PASS+COMMON (positive control). The v2 caller
   reports coverage-dosage AF (AFC) as primary heteroplasmy with a corrected junction VAF (AFJ) and a
   junction-strong PASS path; see `docs/SV_METHODS.md`.
 - Committed example outputs: **`test/sv/example/`** — a representative per-sample VCF/tab, the cohort

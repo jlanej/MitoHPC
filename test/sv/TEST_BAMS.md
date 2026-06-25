@@ -1,17 +1,26 @@
 # MitoHPC SV test BAMs — what each one is and why we test it
 
-This catalogs every BAM used to test the structural-variant (SV) caller: the **10 simulated mock
-BAMs** in [`bams/`](bams/) and the **real 1000 Genomes alignments** in [`real/`](real/). For each, it
-records *what the BAM contains*, *why that scenario exists* (the specific caller behavior it pins
-down), and *what the harness asserts* about it.
+This catalogs every BAM used to test the structural-variant (SV) caller: the **21 simulated mock
+BAMs** in [`bams/`](bams/) — spanning **deletions, duplications, inversions, and complex events** —
+and the **real 1000 Genomes alignments** in [`real/`](real/). For each, it records *what the BAM
+contains*, *why that scenario exists* (the specific caller behavior it pins down), and *what the
+harness asserts* about it.
+
+**The caller is deletion-only today.** Many of the duplication / inversion / complex fixtures are
+**forward-looking** — they exist so that when those call paths land (design in
+[`../docs/SV_EVENT_TYPES.md`](../docs/SV_EVENT_TYPES.md)) the behavior is already pinned. Until then
+they assert their *current* state (mostly `0 records` / `0 PASS`), recorded per-sample in the
+`expect` column of `truth.tsv` and enforced by `run_test.py`.
 
 Sources of truth this document is derived from — keep it in sync with them if they change:
-- [`make_testdata.py`](make_testdata.py) — the read simulator and the `SAMPLES` scenario list.
-- [`truth.tsv`](truth.tsv) — ground-truth breakpoints/heteroplasmy/depth per (sample, event).
-- [`run_test.py`](run_test.py) — the assertions (`check_sample`, `check_degenerate`, `check_cohort`,
-  `check_plots`, `check_recall`).
+- [`make_testdata.py`](make_testdata.py) — the read simulator (`SAMPLES`, the event constructors).
+- [`truth.tsv`](truth.tsv) — per (sample, event) `kind`, breakpoints, het, depth, and the `expect`
+  (today's expected caller behavior: `pass` / `detected` / `no_pass` / `no_record` / `wrap` / `known_fp`).
+- [`run_test.py`](run_test.py) — the expect-driven assertions (`check_sample`, `check_degenerate`,
+  `check_cohort`, `check_plots`, `check_recall`).
+- [`../docs/SV_EVENT_TYPES.md`](../docs/SV_EVENT_TYPES.md) — the DUP/INV/complex design these fixtures pin.
 - [`real/README.md`](real/README.md) — the real-data litmus + LoD/accuracy harness.
-- `docs/SV_METHODS.md` — the caller method, fields, and thresholds the assertions reference.
+- `../docs/SV_METHODS.md` — the as-built (deletion) caller method, fields, and thresholds.
 
 ---
 
@@ -22,8 +31,11 @@ simulator. For each sample it draws reads from a **mixture of circular genomes**
 heteroplasmy `h`:
 
 - a **wild-type** chrM genome contributing depth fraction `1 − Σh`, and
-- one **event** genome per simulated variant (a deletion, duplication, or origin-crossing deletion),
-  each contributing fraction `h`.
+- one **event** genome per simulated variant, each contributing fraction `h`. Constructors:
+  `make_deletion`, `make_dup` (tandem), `make_delwrap` (origin-crossing), `make_inversion`
+  (reverse-**complement** in place → opposite-strand junctions), `make_inv_dup` (fold-back),
+  `make_dispersed_dup`, `make_dupdel` (partial dup-del). The event genome is **doubled** (`eg+eg`)
+  before sampling so fragments wrap its (shifted) origin, exercising the circular path.
 
 Reads are then aligned back through the pipeline's **circular path** (`gen_bams.sh`: minimap2 →
 `circSam.pl` → sort) to produce a BAM that is byte-for-byte equivalent in *form* to the per-sample
@@ -48,31 +60,71 @@ aligner-agnostic, confirmed by [`real/aligntest.tsv`](real/aligntest.tsv).)
 | Constant | Value | Meaning |
 |---|---|---|
 | `BP_TOL` | 30 bp | breakpoint match tolerance (≥ the del4977 13 bp repeat slide) |
-| `SVLEN_TOL` | 40 bp | deletion-size tolerance |
+| `SVLEN_TOL` | 40 bp | deletion-size tolerance (caller `svlen` vs truth; enforced on PASS/detected del events) |
 | `AF_TOL` | 0.15 | heteroplasmy tolerance; **`AFC` or `AFJ`** may match (either suffices) |
-| `HI_HET` | 0.10 | a deletion with `het ≥ 10%` is *required* to reach `FILTER=PASS` |
+
+Whether a deletion is *required* to PASS is decided **per fixture** by the `truth.tsv` `expect` column
+(`require_pass = (expect == "pass")` in `check_sample`), not by a heteroplasmy threshold.
 
 A genuine simulated deletion is also required to be a **clean junction**: split-read tier
 `JSUP = HIGH/MOD` (not the `LOW` artifact tier) with size-consistency `SRCONS ≥ 0.7`.
 
 ---
 
-## 2. The 10 simulated BAMs (`bams/`)
+## 2. The 21 simulated BAMs (`bams/`)
 
-Quick reference (from `truth.tsv` / `SAMPLES`):
+Quick reference (from `truth.tsv` / `SAMPLES`); `expect` is the **current** caller behavior the suite
+asserts. New event constructors live in `make_testdata.py`: `make_inversion` (revcomp in place),
+`make_inv_dup` (fold-back), `make_dispersed_dup`, `make_dupdel`. A **signature pre-assertion** confirmed
+each forward-looking BAM actually carries its signal (opposite-strand `SA` for INV, a coverage gain for
+DUP, off-origin `SA` for wrap) — so a broken simulator fails loudly rather than a test passing for the
+wrong reason.
 
-| BAM | event(s) | het | depth | expected outcome |
-|---|---|---|---|---|
-| `sv_del4977_h30` | del 8469–13447 (4977 bp) | 30% | 300× | **PASS**, COMMON/REPEAT, HOMLEN=13, DELCLASS=I |
-| `sv_del4977_h05` | del 8469–13447 | 5% | 400× | detected, correct fields; **sub-PASS** (`no_cvg_drop`) — low-het floor |
-| `sv_del6000_h50` | del 5999–10999 (4999 bp) | 50% | 300× | **PASS**, **not** COMMON/REPEAT (Class III) |
-| `sv_multidel` | del4977 **and** del6000 | 25% / 15% | 400× | **both** detected as separate records |
-| `sv_homoplasmy` | del 8469–13447 | 95% | 300× | **PASS**, `AFJ→~1.0`, no divide-by-zero |
-| `sv_lowcov` | del 8469–13447 | 50% | **40×** | still detected (**PASS**) at low depth |
-| `sv_dup` | tandem dup 6000–7000 | 50% | 300× | **zero PASS** (coverage *gain* → not a deletion) |
-| `sv_origin` | origin-crossing del 16400→200 (368 bp) | 40% | 400× | **zero PASS**, all coords ≤ contig, `WRAP` |
-| `sv_dloop` | del 400–6000, 5′ bp in D-loop | 40% | 300× | **PASS** + `DLOOP` flag |
-| `sv_wt` | none (wild-type) | — | 300× | **zero PASS** (specificity) |
+**Deletions (the implemented, PASS-able class)**
+
+| BAM | event | het | depth | `expect` | what it pins |
+|---|---|---|---|---|---|
+| `sv_del4977_h30` | del 8469–13447 (4977 bp) | 30% | 300× | pass | common deletion; COMMON/REPEAT/HOMLEN=13/DELCLASS=I |
+| `sv_del4977_h05` | del 8469–13447 | 5% | 400× | detected | low-het floor (detected, sub-PASS) |
+| `sv_del6000_h50` | del 5999–10999 (4999 bp) | 50% | 300× | pass | non-repeat (not COMMON/REPEAT, Class III) |
+| `sv_multidel` | del4977 **and** del6000 | 25/15% | 400× | pass | two concurrent deletions, separate records |
+| `sv_homoplasmy` | del 8469–13447 | 95% | 300× | pass | near-homoplasmic; `AFJ→~1.0`, no ÷0 |
+| `sv_dloop` | del 400–6000 | 40% | 300× | pass | 5′ bp in D-loop → PASS **+ `DLOOP`** flag |
+| `sv_lowcov` | del 8469–13447 | 50% | 40× | pass | low depth, still detected |
+| `sv_del_500` | del 8000–8501 (500 bp) | 50% | 300× | pass | small **detectable** deletion (PASS via DJ) |
+| `sv_del_45` | del 9000–9046 (45 bp) | 50% | 300× | no_record | < minsize=50 **and** a CIGAR-`D` not a split → 0 records |
+| `sv_del_13kb` | del 2000–15001 (13 kb) | 60% | 300× | pass | majority-arc (>BIGDEL) **with** a drop → PASS via dosage (≠ origin artifact) |
+
+**Origin-crossing deletions (WRAP-withheld; the resolution pair)**
+
+| BAM | event | het | depth | `expect` | what it pins |
+|---|---|---|---|---|---|
+| `sv_origin` | delwrap 16400→200 (368 bp, clips OriH) | 40% | 400× | wrap | reported as ~16 kb complement, `WRAP`, 0 PASS → future **DUP** |
+| `sv_del_origin_spares` | delwrap 16400→100 (268 bp, spares origins) | 40% | 400× | wrap | identical WRAP today → future **DEL** (the [origin-resolution](../docs/SV_EVENT_TYPES.md#5-the-circular-del-vs-dup-resolution-origin-preservation) regression pair) |
+
+**Duplications & complex (forward-looking — detected-but-not-PASS today)**
+
+| BAM | event | het | depth | `expect` | what it pins |
+|---|---|---|---|---|---|
+| `sv_dup` | tandem dup 6000–7000 (1 kb) | 50% | 300× | no_pass | coverage *gain* blocks PASS (not a deletion) |
+| `sv_dup_large` | tandem dup 4000–9000 (5 kb) | 50% | 300× | no_pass | gain guard scales to large dups |
+| `sv_dupdel` | dup 5000–8000 w/ internal del 6000–6500 | 40% | 400× | **known_fp** | **documented gap**: the embedded del **spuriously PASSes** today (compound-event; fixed by the DUP-aware caller) |
+| `sv_invdup` | fold-back inverted dup 7000–7400 | 40% | 400× | no_record | opposite-strand arm + gain (Sniffles2 INVDUP) → 0 records |
+
+**Inversions (architecturally invisible today — strand-filtered & CN-neutral)**
+
+| BAM | event | het | depth | `expect` | what it pins |
+|---|---|---|---|---|---|
+| `sv_inv_small` | inv 6000–6500 (500 bp) | 50% | 300× | no_record | balanced inversion → 0 records (the blind spot) |
+| `sv_inv_large` | inv 5000–9000 (4 kb) | 50% | 300× | no_record | invisibility is size-independent |
+| `sv_inv_origin` | inv 16300–16560 (near origin) | 40% | 400× | no_record | strand-skip stacked near the origin |
+| `sv_inv_lowhet` | inv 8000–9000 | 5% | 300× | no_record | low-het inversion (future sensitivity floor) |
+
+**Control**
+
+| BAM | event | het | depth | `expect` | what it pins |
+|---|---|---|---|---|---|
+| `sv_wt` | none (wild-type) | — | 300× | no_pass | specificity (also the degenerate-input substrate, §4) |
 
 ### Positive controls — must detect with correct biology
 
@@ -107,8 +159,8 @@ sensitivity bound. At 5% the coverage drop is marginal, so the call is expected 
 correct breakpoints/annotation but to fall short of PASS** (typically `no_cvg_drop`), consistent with
 the empirical PASS limit-of-detection of ≈ 8% established in [`real/`](real/README.md). *Asserted:*
 the deletion is matched (junction present) with `AFC`/`AFJ` ≈ 0.05 and a clean junction; PASS is
-**not** required (`het < HI_HET`). Tests that low-level events surface for curation rather than being
-silently dropped.
+**not** required (its `expect` is `detected`, not `pass`). Tests that low-level events surface for
+curation rather than being silently dropped.
 
 **`sv_lowcov` — low sequencing depth (40×).**
 The common deletion at 50% het but only 40× depth (vs the ~300–400× of the others, and the
@@ -172,9 +224,51 @@ correctly **skipped** (the `HP_SV_PLOT_SKIP=HP,DLOOP,NUMT` artifact filter — `
 `samplot_filter`), and in **all-plots** mode (`HP_SV_PLOT_ALL`) it **is** shown (`samplot_all_mode`),
 carrying its PASS status and `DLOOP` flag in the gallery.
 
----
+### Size-range deletions — the detection bounds
 
-## 3. The real-data BAMs (`real/`)
+**`sv_del_500` / `sv_del_45` / `sv_del_13kb`** bracket the deletion size range.
+- **`sv_del_500`** (500 bp) is the **small detectable** positive control: large enough that the aligner
+  splits it (190 `SA` reads) so it PASSes via the DJ path with `AFC≈0.50` — the lower bound of clean
+  detection. *Asserted:* `pass`.
+- **`sv_del_45`** (45 bp) is a deliberate **hard-negative**: below `minsize=50`, *and* small enough that
+  the aligner emits it as an internal CIGAR `D` (no `SA` split), so the caller — which seeds only from
+  split-read junctions — sees nothing. *Asserted:* `no_record`. (Together with `sv_del_500` these pin
+  the split-vs-gap boundary the research flagged: an event smaller than a read is jumped, not split.)
+- **`sv_del_13kb`** (13 kb) is a genuine **majority-arc deletion** (`svlen > MTLEN/2`) that — unlike the
+  origin artifact — has a real coverage drop, so it PASSes via **dosage**. *Asserted:* `pass`. This is
+  the regression boundary that keeps the `WRAP` rule honest: a big "deletion" *without* a drop stays
+  `WRAP` (the origin complement), one *with* a drop is a real call.
+
+### Forward-looking — duplications, inversions & complex events (not yet callable)
+
+These exist so the behavior is pinned for when the DUP/INV/complex paths land
+([`../docs/SV_EVENT_TYPES.md`](../docs/SV_EVENT_TYPES.md)). Each was verified to carry its real signal,
+then asserts its *current* (deletion-only) outcome.
+
+**Duplications — `sv_dup` (1 kb tandem) / `sv_dup_large` (5 kb tandem).** A tandem dup is the *mirror*
+of a deletion: a reverse-order junction **plus a coverage gain** (verified `CVGR≈1.5` over the 5 kb arc,
+i.e. `1+h`, not `0.5`). Today the reverse-order junction surfaces as a DEL-shaped record but the gain
+guard (`ratio > 1+gainpad`) blocks PASS. *Asserted:* `no_pass`. They pin that the gain guard rejects
+dups at both scales — and become the DUP positive controls once `SVTYPE=DUP` lands.
+
+**Compound — `sv_dupdel` (partial duplication / dup-del).** One molecule carries **both** a dup junction
+and an internal deletion (the clinically dominant mtDNA dup class — KSS/Pearson). It exposes a real
+**KNOWN GAP**: the embedded deletion (m.6000–6500) shows a *relative* coverage drop against the
+duplicated flanks and so **spuriously PASSes today** as a standalone deletion. *Asserted (as a
+characterization test):* `known_fp` — `≥1 PASS`, labelled a documented gap that the DUP-aware caller
+will close (it must not let an embedded del PASS under a net gain). When that lands, this assertion
+flips and signals the fix.
+
+**Inverted dup — `sv_invdup` (fold-back).** An inverted extra copy: opposite-strand `SA` (the inverted
+arm) **co-located with a gain** — a Sniffles2 `INVDUP`, *not* a balanced inversion. The inverted arm is
+strand-filtered and there is no same-strand junction, so today → `no_record`.
+
+**Inversions — `sv_inv_small/large/origin/lowhet`.** Balanced inversions are the single biggest blind
+spot: their junctions are **opposite-strand** (verified: 324/350/390/37 opposite-strand `SA` reads
+respectively) which `extract_junctions` discards, and they are **copy-number-neutral** so dosage sees
+nothing either. *Asserted:* `no_record` for all four — demonstrating the invisibility is independent of
+size (`small`/`large`), heteroplasmy (`lowhet` @5%), and position (`origin`, near the artificial origin).
+They become the INV detect-and-flag fixtures once the opposite-strand branch lands.
 
 Small committed **real** chrM alignments from 1000 Genomes 30× high-coverage (GRCh38 chrM == rCRS ==
 `RefSeq/chrM.fa`), extracted and realigned through the same circular path, subsampled to the
