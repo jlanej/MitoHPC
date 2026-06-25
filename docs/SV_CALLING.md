@@ -24,8 +24,10 @@ produces, without touching the SNV/CN/haplogroup deliverables. The north star is
 **robust and defensible first, complete later**: narrow, correct, auditable v1 → richer v2/v3.
 
 The dominant clinically-relevant mtDNA SV is the **single large deletion**, so v1 targets exactly
-that one call class with high confidence. Duplications, multiple/complex rearrangements,
-inversions, and insertions are deferred (see roadmap §10).
+that one call class with high confidence. **Tandem duplications and inversions are now implemented as
+opt-in** (`--call-dup` / `--call-inv`, default off; see `SV_EVENT_TYPES.md`); multiple/complex
+rearrangements, dispersed duplications, insertions, and the origin DEL-vs-DUP resolution remain
+deferred (see roadmap §10).
 
 ---
 

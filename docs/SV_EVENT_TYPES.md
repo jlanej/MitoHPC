@@ -1,11 +1,16 @@
 # SV event types — unified design for calling deletions, duplications, inversions & complex events
 
-**Status:** the single harmonized spec for extending the MitoHPC SV caller beyond deletions.
-**Deletions are implemented and validated.** Duplications, inversions, complex (dup-del / inverted-dup)
-events, and circular DEL-vs-DUP *resolution* are **deferred — designed here, not yet built.** Every
-addition is opt-in and additive (frozen DEL behavior unchanged). This doc is the place all future
-event-type work is harmonized; the as-built deletion method lives in [`SV_METHODS.md`](SV_METHODS.md),
-the literature/roadmap in [`SV_CALLING.md`](SV_CALLING.md).
+**Status:** the single harmonized spec for the MitoHPC SV caller's event types.
+- **Deletions** — implemented, default-on, validated.
+- **Tandem duplications** (`SVTYPE=DUP`) and **balanced inversions** (`SVTYPE=INV`, detect-and-flag),
+  plus **fold-back INVDUP** detection — **implemented v1, OPT-IN** behind `HP_SV_DUP` / `HP_SV_INV`
+  (`--call-dup` / `--call-inv`), default **off** so the deletion **VCF record** is byte-for-byte
+  unchanged (the `.sv.tab` gains an additive `svtype` column).
+- **Deferred — designed here, not yet built:** dispersed duplications, full dup-del cluster resolution,
+  and the circular DEL-vs-DUP **origin-preservation** *resolution* (§5).
+
+Every addition is additive (frozen DEL behavior unchanged). The as-built method lives in
+[`SV_METHODS.md`](SV_METHODS.md), the literature/roadmap in [`SV_CALLING.md`](SV_CALLING.md).
 
 The test fixtures that pin each class (including the forward-looking ones that don't fully resolve yet)
 are catalogued in [`../test/sv/TEST_BAMS.md`](../test/sv/TEST_BAMS.md) and §9 below.
@@ -41,13 +46,14 @@ The single most important consequences:
 
 | Class | What `callsv.py` does today |
 |---|---|
-| Deletion | Fully supported (junction + dosage; two PASS paths). The only PASS-able class. |
-| Tandem dup | The reverse-order junction *is* found, but the deletion-shaped record is **blocked** from PASS by the coverage-**gain** guard (`cvg_gain = ratio > 1+gainpad` → `no_cvg_drop`; `j_pass` requires `not cvg_gain`). → a **non-PASS DEL-shaped record**. |
-| Inversion | **Architecturally invisible.** `extract_junctions` (`if sref != chrom or sstrand != strand: continue`) **discards every opposite-strand `SA` segment**, so inversions emit **zero records** — not even a mis-classified one. |
-| Complex (dup-del / inv-dup) | The internal **del** junction may surface as a (likely non-PASS) record; the inverted arm is invisible; net ≈ 0 PASS. |
+| Deletion | Fully supported (junction + dosage; two PASS paths). Default-on. |
+| Tandem dup | **Default (DEL-only):** the reverse-order junction is found but the DEL-shaped record is blocked by the coverage-gain guard → a non-PASS DEL record. **With `--call-dup`:** reclassified `SVTYPE=DUP`, sign-flipped `AFC = ratio−1`, PASS on a junction-corroborated gain (§3.2). |
+| Inversion | **Default:** **architecturally invisible** — `extract_junctions` discards every opposite-strand `SA`, so 0 records. **With `--call-inv`:** the separate `extract_inversions` branch emits `SVTYPE=INV` (junction-only, detect-and-flag; §3.3). |
+| Complex (dup-del / inv-dup) | The internal **del** PASSes as a deletion (a known compound-event gap); a fold-back **INVDUP** is detected (`--call-inv`) as an `INV` carrying the `INVDUP` flag + `not_balanced` filter (non-PASS). |
 | Origin-crossing / majority-arc | Reported as the linearized complement, `WRAP`-flagged, non-PASS, `SVCONF='.'` (detected, withheld, never resolved — §5). |
 
-So the forward-looking test BAMs (§9) should mostly be **0 PASS / non-PASS / 0-record today**, by design.
+By **default** (flags off) the forward-looking DUP/INV test BAMs are **0 PASS / non-PASS / 0-record**;
+their `--call-dup`/`--call-inv` behavior is exercised separately by `run_test.py`'s `check_dup_inv`.
 
 ---
 
@@ -58,7 +64,7 @@ Same-strand forward-order junction; coverage drop. PASS via **DJ** (dosage drop 
 junction) or **J** (strong clean junction alone, `svlen < BIGDEL`, not `WRAP`, not a gain).
 `AFC = 1 − inside/outside`, `AFJ = JR/(JR+SR)`. See `SV_METHODS.md` §4–5. **No change needed.**
 
-### 3.2 Duplication — `SVTYPE=DUP` (deferred)
+### 3.2 Duplication — `SVTYPE=DUP` (implemented v1, opt-in `--call-dup`)
 **Signature:** the mirror of a deletion — a **reverse-order** junction (segments in *decreasing*
 reference order; clipped pieces map **inside** `[bp5,bp3]`) **co-located with a coverage GAIN**.
 **Both** are required: a reverse-order junction *alone* is the DEL-of-complement reading (§5); a gain
@@ -77,7 +83,7 @@ acceptor-site split reads; NUMT-shaped; hardest).
 **Implementation sketch:** branch in the classifier on `reverse-order ∧ gain` → emit `SVTYPE=DUP`,
 `SVCLAIM=DJ`, sign-aware `AFC`. Keep tandem first; dispersed/dup-del behind further work.
 
-### 3.3 Inversion — `SVTYPE=INV` (deferred; the biggest blind spot)
+### 3.3 Inversion — `SVTYPE=INV` (implemented v1, opt-in `--call-inv`)
 **Signature is STRAND, not distance:** a read spanning an inversion breakpoint splits into segments of
 **opposite** orientation (`SA` 3rd field ≠ primary strand; FLAG `0x10`). Read pairs go **FF/RR**
 (`INV3`/`INV5`; DELLY `3to3`/`5to5`; Manta `INV3`/`INV5`) — a balanced inversion has **two reciprocal
@@ -211,12 +217,24 @@ does — keep a withhold (`WRAP`) path for that residue. True structural resolut
 
 ## 8. Phased roadmap
 
-- **v3a — tandem DUP + origin-resolution.** Sign-aware `AFC`; `reverse-order ∧ gain → SVTYPE=DUP`;
-  `HP_SV_RESOLVE_ORIGIN` (OriH/OriL) to turn today's `WRAP` set into DEL/DUP. Opt-in.
-- **v3b — INV detect-and-flag.** Opposite-strand junction branch; `AFJ`-only; `SVTYPE=INV` (`INV3/INV5`);
-  default non-PASS; `CIPOS/CIEND`.
-- **v3c — complex.** dup-del cluster separation; `INVDUP`; dispersed-dup junction pairing; multi-event
-  `AFJ`-or-`AFC` quantification.
+- **v3a — tandem DUP.** ✅ **DONE (opt-in `--call-dup`).** Sign-aware `AFC` (`ratio−1`); a gain candidate
+  → `SVTYPE=DUP`, PASS on a junction-corroborated gain (NUMT/HP breakpoints block the PASS) off the
+  origin. **v1 caveats / deferred hardening:** breakpoints are approximate (the reverse-order junction
+  comes from the shared deletion extractor, not re-derived); the discriminator is the coverage **gain**
+  alone — wiring the **everted-junction orientation** through `extract_junctions` for a belt-and-suspenders
+  check, and a junction-only small-DUP path (when interior dosage is not estimable), are deferred. The
+  origin-resolution (`HP_SV_RESOLVE_ORIGIN`, OriH/OriL → turn `WRAP` into DEL/DUP) is still **deferred** (§5).
+- **v3b — INV detect-and-flag.** ✅ **DONE (opt-in `--call-inv`).** A separate opposite-strand-junction
+  branch (`extract_inversions`, clip-anchored breakpoints + overlap-merge, **SA-segment MAPQ floor on
+  both arms**), `AFJ`-only scoring, `SVTYPE=INV`, default non-PASS unless strong/clean; fold-back
+  **INVDUP** detected via a local flank-**asymmetry** coverage step (`INVDUP` flag + `not_balanced`
+  filter). **v1 caveats / deferred hardening:** a single opposite-strand cluster can PASS — **reciprocal-
+  junction confirmation** (require both `INV3`+`INV5` breakends, Manta/DELLY convention) is deferred;
+  `INV3/INV5`/`MATEID` tags and **inversion-aware microhomology `CIPOS/CIEND`** are not yet emitted (INV
+  breakpoints are reported as point estimates though they are ±`pad` approximate); an **origin-crossing
+  inversion** is linearized incorrectly and `WRAP`-withheld (the §2/§8 origin blind spot), not resolved.
+- **v3c — complex (deferred).** dup-del cluster separation (the embedded-del spurious PASS); dispersed-dup
+  junction pairing; multi-event `AFJ`-or-`AFC` quantification.
 - Throughout: NUMT/HP/DLOOP masks extended to every event type; long-read engine (`HP_SV=sniffles`) as
   the eventual ground-truth path for complex/origin events.
 

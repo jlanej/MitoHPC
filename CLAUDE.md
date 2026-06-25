@@ -197,8 +197,10 @@ When implementing, honor these rules (they operationalize §0):
 - Future event-type spec (the harmonized spot for all deferred SV work): **`docs/SV_EVENT_TYPES.md`** —
   unified design for calling **duplications, inversions, and complex (dup-del / inverted-dup) events**
   plus the circular DEL-vs-DUP **origin-preservation** resolution. Orientation×coverage taxonomy,
-  per-event detection/quantification, pitfalls, schema, phased roadmap, and the forward-looking test
-  mapping. DEL is implemented; everything else here is designed, NOT yet built.
+  per-event detection/quantification, pitfalls, schema, phased roadmap, and the test mapping.
+  **DEL is default-on; tandem DUP + balanced INV (+ INVDUP detection) are implemented v1 and OPT-IN**
+  (`HP_SV_DUP` / `HP_SV_INV`, default off → DEL byte-identical); dispersed-dup, dup-del resolution, and
+  the origin-resolution are still deferred.
 - Existing pipeline outputs/legend: `README.md` (the `## OUTPUT ##` section is the list of frozen
   deliverables).
 - Test fixtures: `examples1/`, `examples2/`.
@@ -209,7 +211,12 @@ When implementing, honor these rules (they operationalize §0):
   clustering from `SA:Z:` tags, in-process per-base depth (`count_coverage`), coverage
   corroboration, two heteroplasmy estimates (AFJ/AFC) + AFDIFF QC, FP flags
   (REPEAT/NUMT/HP/DLOOP/WRAP), PASS/FILTER logic, VCF+tab. Replaces the former perl
-  `sa2del.pl`/`svCall.pl` (field-for-field parity verified).
+  `sa2del.pl`/`svCall.pl` (field-for-field parity verified). **Opt-in extra classes** (default off):
+  `--call-dup` reclassifies a gain candidate as `SVTYPE=DUP` (sign-flipped `AFC=ratio−1`, can PASS);
+  `--call-inv` adds a separate opposite-strand-junction branch (`extract_inversions`) → `SVTYPE=INV`
+  (junction-only/`AFJ`, detect-and-flag, `INVDUP` flag on a fold-back). A svtype-aware `build_record`
+  emits all three; the DEL record is **byte-identical** with the flags off (tab gains an `svtype` col).
+  Design/method in `docs/SV_EVENT_TYPES.md`.
 - `scripts/callSV.sh` — thin per-sample driver; resolves `HP_SV_*` thresholds + masks and runs
   `$HP_PYTHON(=python3) callsv.py` on the live `$O.bam`, writing only `$O.sv.vcf` + `$O.sv.tab`.
   Invoked by the gated block in `filter.sh` (after the GRIDSS block, before the BAM `rm`).
@@ -267,7 +274,9 @@ When implementing, honor these rules (they operationalize §0):
   touches the frozen SNV/CN deliverables. The self-copy guard in `callSV.sh` lets it re-run on the
   persisted BAM safely.
 - Wiring: `HP_SV` + `HP_SV_*` tunables in `init.sh`; validation + exports + gated summary in
-  `run.sh`; one gated block in `filter.sh`. With `HP_SV` empty the pipeline is unchanged. SV
+  `run.sh`; one gated block in `filter.sh`. With `HP_SV` empty the pipeline is unchanged. The opt-in
+  `HP_SV_DUP`/`HP_SV_INV` (+ `HP_SV_INV_MINAFJ`/`HP_SV_INV_MINJR`) → `callSV.sh` `--call-dup`/`--call-inv`,
+  and are forwarded by `mitohpc-batch-container.sh` (default off). SV
   visualization defaults ON and is configured/forwarded by `mitohpc-batch-container.sh`
   (`HP_SV_PLOT` enable + `HP_SV_PLOT_*` filter), so a default batch run also produces the samplot
   gallery; `HP_SV_KEEPBAM`/`HP_SV_RECALL` (re-run speedup) are forwarded too; the bare pipeline is unchanged.

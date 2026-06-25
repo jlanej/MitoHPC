@@ -469,6 +469,82 @@ def check_plots(outdir):
            "HP_SV_PLOT_ALL visualizes the DLOOP call; manifest carries filter/flags; report marks plotAll")
 
 
+def check_dup_inv(outdir):
+    """The OPT-IN tandem-DUP (HP_SV_DUP) and INV (HP_SV_INV) call paths. Re-run the forward-looking
+    fixtures with the flags ON and assert the correct SVTYPE=DUP/INV calls; and prove the deletion
+    path is unaffected by the flags (no spurious DUP/INV on a real deletion)."""
+    print("\n[opt-in DUP/INV call paths — HP_SV_DUP / HP_SV_INV]")
+    base = dict(os.environ, HP_SDIR=SDIR, HP_RDIR=RDIR, HP_PYTHON=PYEXE, HP_MT="chrM", HP_MTLEN="16569")
+
+    def run(name, **extra):
+        pref = os.path.join(outdir, "di_" + name)
+        subprocess.run(["bash", os.path.join(SDIR, "callSV.sh"), name, os.path.join(BAMS, name + ".bam"), pref],
+                       env=dict(base, **extra), capture_output=True, text=True)
+        return read_tab(pref + ".sv.tab")
+
+    def find(rows, svtype, bp5=None, bp3=None, passed=None, flag=None):
+        for r in rows:
+            if r["svtype"] != svtype:
+                continue
+            if bp5 is not None and abs(int(r["pos_bp5"]) - bp5) > BP_TOL:
+                continue
+            if bp3 is not None and abs(int(r["end_bp3"]) - bp3) > BP_TOL + 5:
+                continue
+            if passed is not None and (r["filter"] == "PASS") != passed:
+                continue
+            if flag is not None and flag not in r["flags"]:
+                continue
+            return r
+        return None
+
+    # tandem DUP -> SVTYPE=DUP PASS, AFC = the GAIN fraction (~ the dup heteroplasmy). Breakpoints are
+    # approximate (the reverse-order junction comes from the shared deletion extractor), so we bound them
+    # loosely to the duplicated arc rather than matching exactly.
+    def near_arc(r, lo, hi, pad=400):
+        return lo - pad <= int(r["pos_bp5"]) and int(r["end_bp3"]) <= hi + pad
+    dup = [r for r in run("sv_dup", HP_SV_DUP="1")
+           if r["svtype"] == "DUP" and r["filter"] == "PASS" and near_arc(r, 6000, 7000)]
+    record("dup_tandem", len(dup) >= 1 and abs(fnum(dup[0]["af_coverage"]) - 0.5) <= AF_TOL,
+           "sv_dup -> DUP PASS in arc, AFC=%s (want ~0.50)" % (dup[0]["af_coverage"] if dup else "none"))
+    dupL = [r for r in run("sv_dup_large", HP_SV_DUP="1")
+            if r["svtype"] == "DUP" and r["filter"] == "PASS" and near_arc(r, 4000, 9000)]
+    record("dup_large", len(dupL) >= 1, "sv_dup_large -> DUP PASS in arc (%d)" % len(dupL))
+
+    # balanced INV -> SVTYPE=INV PASS; low-het INV detected but withheld for the RIGHT reason; origin
+    # INV WRAP-withheld (assert the specific FILTER token, not just "not PASS", so a wrong-reason fail
+    # can't false-green).
+    record("inv_balanced", find(run("sv_inv_small", HP_SV_INV="1"), "INV", 6000, 6500, passed=True) is not None,
+           "sv_inv_small -> INV PASS")
+    record("inv_large", find(run("sv_inv_large", HP_SV_INV="1"), "INV", 5000, 9000, passed=True) is not None,
+           "sv_inv_large -> INV PASS")
+    rl = find(run("sv_inv_lowhet", HP_SV_INV="1"), "INV", 8000, 9000)
+    record("inv_lowhet", rl is not None and "lowAFJ" in rl["filter"],
+           "sv_inv_lowhet -> INV withheld with lowAFJ (%s)" % (rl["filter"] if rl else "none"))
+    ro = [r for r in run("sv_inv_origin", HP_SV_INV="1") if r["svtype"] == "INV"]
+    record("inv_origin", len(ro) >= 1 and all("WRAP" in r["filter"] for r in ro),
+           "sv_inv_origin -> INV record(s), all WRAP-withheld (%d)" % len(ro))
+
+    # fold-back INVDUP -> flagged INVDUP, withheld with the not_balanced filter (not a balanced inversion)
+    invdup = find(run("sv_invdup", HP_SV_INV="1"), "INV", flag="INVDUP")
+    record("inv_dup_flag", invdup is not None and "not_balanced" in invdup["filter"],
+           "sv_invdup -> INVDUP flag, not_balanced (%s)" % (invdup["filter"] if invdup else "none"))
+
+    # FREEZE: the deletion VCF record is BYTE-IDENTICAL with the flags off — vs the committed baseline
+    # (whose record predates the DUP/INV refactor), and unchanged when the flags are ON.
+    pref = os.path.join(outdir, "di_frozen")
+    subprocess.run(["bash", os.path.join(SDIR, "callSV.sh"), "sv_del4977_h30",
+                    os.path.join(BAMS, "sv_del4977_h30.bam"), pref], env=base, capture_output=True, text=True)
+    recs = lambda p: [l for l in open(p).read().splitlines() if l and not l.startswith("#")] if os.path.exists(p) else []
+    fresh = recs(pref + ".sv.vcf")
+    baseline = recs(os.path.join(HERE, "example", "sv_del4977_h30.sv.vcf"))
+    record("del_frozen_vcf", len(fresh) >= 1 and fresh == baseline,
+           "DEL VCF record byte-identical to the committed baseline (flags off)")
+    rdel = run("sv_del4977_h30", HP_SV_DUP="1", HP_SV_INV="1")
+    deld = find(rdel, "DEL", 8469, 13447, passed=True)
+    record("del_unaffected_by_flags", deld is not None and not any(r["svtype"] in ("DUP", "INV") for r in rdel),
+           "del4977 with DUP+INV on -> DEL PASS, no spurious DUP/INV (%d records)" % len(rdel))
+
+
 def check_recall(outdir):
     """HP_SV_KEEPBAM persists the circular-aware BAM; re-calling on it (the fast re-run path, no
     realign) must reproduce the original calls byte-for-byte."""
@@ -507,6 +583,7 @@ def main():
         check_vcf_spec(outdir)
         check_real(outdir)
         check_plots(outdir)
+        check_dup_inv(outdir)
         check_recall(outdir)
     finally:
         shutil.rmtree(outdir, ignore_errors=True)

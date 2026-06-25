@@ -63,6 +63,11 @@ GAINPAD=${HP_SV_GAINPAD:-0.10}  # coverage-gain tolerance; ratio>1+GAINPAD => DU
 SRTOL=${HP_SV_SRTOL:-5}            # bp tolerance on per-read deletion size for split-read consistency
 SRMINCONS=${HP_SV_SRMINCONS:-0.7} # min consistency for JSUP=MOD/HIGH (a clean, tight junction)
 SRMINSB=${HP_SV_SRMINSB:-0.1}     # min strand balance for JSUP=HIGH
+# OPT-IN extra event classes (default OFF => deletion-only, the frozen path; docs/SV_EVENT_TYPES.md)
+DUPOPT=""; [ -n "${HP_SV_DUP:-}" ] && DUPOPT="--call-dup"       # tandem duplications (gain candidates)
+INVOPT=""; [ -n "${HP_SV_INV:-}" ] && INVOPT="--call-inv"       # inversions (opposite-strand branch)
+INVMINAFJ=${HP_SV_INV_MINAFJ:-0.10}   # min junction VAF for an INV to PASS (CN-neutral => junction-only)
+INVMINJR=${HP_SV_INV_MINJR:-6}        # min opposite-strand junction reads for an INV to PASS
 
 test -s "$BAM"
 test -s "$RDIR/$MT.fa"
@@ -97,6 +102,7 @@ fi
   --strongafj "$STRONGAFJ" --strongjr "$STRONGJR" --bigdel "$BIGDEL" \
   --bigminjr "$BIGMINJR" --bigminafj "$BIGMINAFJ" \
   --jminjr "$JMINJR" --jminafj "$JMINAFJ" --gainpad "$GAINPAD" \
+  --inv-minafj "$INVMINAFJ" --inv-minjr "$INVMINJR" $DUPOPT $INVOPT \
   --srtol "$SRTOL" --srmincons "$SRMINCONS" --srminsb "$SRMINSB" $maskopt
 
 echo "[callSV] $S -> $O.sv.vcf ($(grep -vc '^#' "$O.sv.vcf") records)" >&2

@@ -391,7 +391,12 @@ Computed from the SA reads (the well-characterised evidence); soft-clip-harveste
 `pysam.AlignmentFile.count_coverage(chrom, 0, mtlen, quality_threshold=0)` summed over A/C/G/T into
 a 1-based array `dep[1..mtlen]`; with the default `read_callback="all"` (skips unmapped/secondary/
 QC-fail/dup) this matches `samtools depth -a` (verified field-for-field on the mock BAMs). All
-position windows **wrap modulo mtlen** so the circular origin is handled.
+position windows **wrap modulo mtlen** so the circular origin is handled. Depth is read only by the
+per-junction dosage windows (and, under `--call-inv`, by the inversion path), so `per_base_depth` is
+**computed lazily** — a sample with no junctions and no `--call-inv` skips the whole-genome
+`count_coverage` entirely (the dominant per-sample cost), emitting the same empty result. The
+`--chrom`/`--mtlen` consistency check that used to live in `per_base_depth` is now `validate_contig`,
+called unconditionally so a degenerate input still fails cleanly even when depth is skipped.
 
 ### 5.1 Coverage statistics (per junction) — masked, transition-excluded, trimmed
 ```
@@ -672,6 +677,10 @@ direct-repeat windows m.8470–8482 / 13447–13459 (§5.4).
 | `HP_SV_SRTOL` | 5 | bp tolerance on per-read deletion size for the split-read consistency `SRCONS` (§4.5) |
 | `HP_SV_SRMINCONS` | 0.7 | min `SRCONS` for `JSUP`=MOD/HIGH (a clean, consistent junction) |
 | `HP_SV_SRMINSB` | 0.1 | min strand balance `SRSB` for `JSUP`=HIGH |
+| `HP_SV_DUP` | *(empty)* | opt-in: also call tandem **duplications** (`--call-dup`); empty = off (§7a) |
+| `HP_SV_INV` | *(empty)* | opt-in: also call **inversions** (`--call-inv`); empty = off (§7a) |
+| `HP_SV_INV_MINAFJ` | 0.10 | min junction VAF for an INV to PASS (INV is CN-neutral ⇒ junction-only) |
+| `HP_SV_INV_MINJR` | 6 | min opposite-strand junction reads for an INV to PASS |
 
 > **v2 calibration caveat.** The dosage/consistency thresholds above are defaults validated on the
 > simulated mocks plus real 1000G high-coverage chrM (healthy → 0 PASS); they are **not** yet locked
@@ -679,6 +688,36 @@ direct-repeat windows m.8470–8482 / 13447–13459 (§5.4).
 
 `HP_SV_DROP` is the key sensitivity/specificity knob and is an open tuning question (see
 `SV_CALLING.md` §11); it should be calibrated against a spiked dilution series.
+
+---
+
+## 7a. Opt-in event classes — DUP & INV (as built)
+
+Deletions are the default class. Two additional classes are **implemented but opt-in** (default off →
+the deletion output is byte-for-byte unchanged; the tab gains an `svtype` column). Full design +
+rationale in [`SV_EVENT_TYPES.md`](SV_EVENT_TYPES.md); here is the as-built summary.
+
+- **Tandem duplication — `HP_SV_DUP=1` / `--call-dup`.** A junction candidate (from the *same*
+  `extract_junctions`) whose coverage shows a **gain** (`CVGR > 1+HP_SV_GAINPAD`) and is not at the
+  origin is reclassified `SVTYPE=DUP`: the dosage AF flips sign to the **gain fraction**
+  (`AFC = CVGR − 1`, so `AFC ≈` the dup heteroplasmy), `SVLEN` is positive, `SVCLAIM=DJ`, and it PASSes
+  on a junction-corroborated gain off fragile regions. Breakpoints are approximate (the reverse-order
+  junction is not re-derived from the shared extractor).
+- **Inversion — `HP_SV_INV=1` / `--call-inv`.** A separate `extract_inversions` collects **opposite-
+  strand** `SA` junctions (the signal `extract_junctions` discards), with a **MAPQ floor on both arms**
+  (the SA segment's mapQ too — opposite-strand chimeras from NUMTs/palindromes are the dominant INV FP
+  and there is no coverage backstop), anchors each breakpoint on the read's clip-side edge, and merges
+  the two reciprocal junctions of one event. Inversions are copy-number-**neutral**, so scoring is
+  **junction-only** (`AFJ`; `AFC=.`); the posture is detect-and-flag — PASS only a clean, strong
+  (`AFJ≥HP_SV_INV_MINAFJ`, `JR≥HP_SV_INV_MINJR`), non-fragile **balanced** inversion. A local coverage
+  **asymmetry** (one flank/inside elevated vs the lower flank) marks a **fold-back inverted
+  duplication**: `INVDUP` flag + `not_balanced` filter (non-PASS). **v1 limitations** (see
+  `SV_EVENT_TYPES.md` §8): no reciprocal-junction (`INV3`/`INV5`) confirmation, no `CIPOS/CIEND`
+  microhomology window (breakpoints are ±`HP_SV_PAD` approximate), and an origin-crossing inversion is
+  linearized incorrectly → `WRAP`-withheld, not resolved.
+- A svtype-aware `build_record()` emits DEL/DUP/INV through one path. `run_test.py`'s `check_dup_inv`
+  exercises both flags (DUP PASS + `AFC`≈het; balanced INV PASS; low-het/origin INV withheld; INVDUP
+  flagged) and proves a real deletion is unaffected when both flags are on.
 
 ---
 

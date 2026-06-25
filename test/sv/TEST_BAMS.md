@@ -111,7 +111,7 @@ wrong reason.
 | `sv_dupdel` | dup 5000–8000 w/ internal del 6000–6500 | 40% | 400× | **known_fp** | **documented gap**: the embedded del **spuriously PASSes** today (compound-event; fixed by the DUP-aware caller) |
 | `sv_invdup` | fold-back inverted dup 7000–7400 | 40% | 400× | no_record | opposite-strand arm + gain (Sniffles2 INVDUP) → 0 records |
 
-**Inversions (architecturally invisible today — strand-filtered & CN-neutral)**
+**Inversions (DEL-only default: invisible — strand-filtered & CN-neutral; callable via `--call-inv`)**
 
 | BAM | event | het | depth | `expect` | what it pins |
 |---|---|---|---|---|---|
@@ -239,11 +239,15 @@ carrying its PASS status and `DLOOP` flag in the gallery.
   the regression boundary that keeps the `WRAP` rule honest: a big "deletion" *without* a drop stays
   `WRAP` (the origin complement), one *with* a drop is a real call.
 
-### Forward-looking — duplications, inversions & complex events (not yet callable)
+### Forward-looking — duplications, inversions & complex events
 
-These exist so the behavior is pinned for when the DUP/INV/complex paths land
-([`../docs/SV_EVENT_TYPES.md`](../docs/SV_EVENT_TYPES.md)). Each was verified to carry its real signal,
-then asserts its *current* (deletion-only) outcome.
+By **default** (deletion-only) these assert their DEL-only outcome (below). The **opt-in** tandem-DUP
+(`HP_SV_DUP`) and inversion (`HP_SV_INV`) paths are now implemented
+([`../docs/SV_EVENT_TYPES.md`](../docs/SV_EVENT_TYPES.md) §3.2/§3.3); `run_test.py`'s **`check_dup_inv`**
+re-runs these fixtures with the flags on and asserts the real DUP/INV calls (`sv_dup`→DUP PASS with
+`AFC`≈het, `sv_inv_small/large`→INV PASS, `sv_inv_lowhet`/`sv_inv_origin`→withheld, `sv_invdup`→INVDUP
+flagged) plus that a real deletion is unaffected by the flags. Each BAM was verified to carry its real
+signal first.
 
 **Duplications — `sv_dup` (1 kb tandem) / `sv_dup_large` (5 kb tandem).** A tandem dup is the *mirror*
 of a deletion: a reverse-order junction **plus a coverage gain** (verified `CVGR≈1.5` over the 5 kb arc,

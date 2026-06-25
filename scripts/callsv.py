@@ -365,10 +365,119 @@ def extract_junctions(bam, chrom, minmapq, minsize, maxsize, pad, minsupport, mt
 
 
 # --------------------------------------------------------------------------- #
+# Stage A' (opt-in): inversion junctions = OPPOSITE-strand split reads
+# --------------------------------------------------------------------------- #
+def extract_inversions(bam, chrom, minmapq, minsize, maxsize, pad, minsupport, mtlen, srtol=5):
+    """Return clustered INVERSION candidates: (bp5, bp3, svlen, JR, srcons, srsb). An inversion
+    breakpoint joins a forward arm to a reverse-COMPLEMENTED arm, so the SA segment maps to the
+    OPPOSITE strand (`sstrand != strand`) — exactly what `extract_junctions` discards. The two arms'
+    inner edges bracket the inverted span [bp5, bp3]; both reciprocal junctions (left a-1|a and right
+    b|b+1) cluster to ~(a, b). CN-neutral, so there is no dosage corroboration — scoring is junction-
+    only (docs/SV_EVENT_TYPES.md §3.3)."""
+    pts = []   # (lo, hi, rid, strand)
+    with pysam.AlignmentFile(bam, "rb") as af:
+        for r in af.fetch(chrom):
+            if r.is_unmapped or r.is_secondary or r.is_supplementary:
+                continue
+            if r.mapping_quality < minmapq:
+                continue
+            if not r.has_tag("SA"):
+                continue
+            strand = "-" if r.is_reverse else "+"
+            abeg = r.reference_start + 1
+            aend = r.reference_end
+            if aend is None:
+                continue
+            sa = r.get_tag("SA").split(";")[0].split(",")
+            if len(sa) < 5:
+                continue
+            sref, spos, sstrand, scig, smapq = sa[0], sa[1], sa[2], sa[3], sa[4]
+            if sref != chrom or sstrand == strand:        # OPPOSITE strand => inversion (vs DEL/DUP)
+                continue
+            # MAPQ floor on the SA segment too (not just the primary): opposite-strand chimeras from
+            # NUMTs / palindromes are the dominant inversion false-positive, and INV has no coverage
+            # backstop — so require BOTH arms well-mapped (docs/SV_EVENT_TYPES.md §6).
+            if not smapq.isdigit() or int(smapq) < minmapq:
+                continue
+            if not spos.isdigit() or scig == "*" or not scig:
+                continue
+            sbeg = wrap1(int(spos), mtlen)
+            send = sbeg + ref_len_from_cigar(scig) - 1
+            # ANCHOR on the primary's clip-side aligned edge (precise: every read crossing the same
+            # breakpoint clips at the same base), and pair it with the SA arm's FAR edge (the inversion
+            # links two DISTANT points). This is invariant to which arm is primary/SA, so the two
+            # reciprocal junctions of one inversion cluster together instead of fragmenting.
+            cig = r.cigartuples
+            if not cig:
+                continue
+            lead = cig[0][1] if cig[0][0] in (4, 5) else 0
+            trail = cig[-1][1] if cig[-1][0] in (4, 5) else 0
+            bp1 = aend if trail >= lead else abeg
+            bp2 = send if abs(send - bp1) >= abs(sbeg - bp1) else sbeg
+            lo, hi = (bp1, bp2) if bp1 <= bp2 else (bp2, bp1)
+            if not (1 <= lo <= mtlen and 1 <= hi <= mtlen):
+                continue
+            if (hi - lo) < minsize or (hi - lo) > maxsize:
+                continue
+            pts.append((lo, hi, r.query_name, strand))
+
+    pts.sort(key=lambda x: (x[0], x[1]))
+    clusters = []
+    for p in pts:
+        if (clusters and abs(p[0] - clusters[-1]["pts"][-1][0]) <= pad
+                and abs(p[1] - clusters[-1]["pts"][-1][1]) <= pad):
+            clusters[-1]["pts"].append(p)
+        else:
+            clusters.append({"pts": [p]})
+
+    out = []
+    for c in clusters:
+        cpts = c["pts"]
+        tids = {p[2] for p in cpts}
+        if len(tids) < minsupport:
+            continue
+        bp5 = mode([p[0] for p in cpts])
+        bp3 = mode([p[1] for p in cpts])
+        if not (1 <= bp5 <= mtlen and 1 <= bp3 <= mtlen) or bp3 <= bp5:
+            continue
+        svlen = bp3 - bp5
+        if svlen < minsize or svlen > maxsize:
+            continue
+        sizes = [p[1] - p[0] for p in cpts]
+        msize = mode(sizes)
+        srcons = sum(1 for v in sizes if abs(v - msize) <= srtol) / len(sizes)
+        nf = sum(1 for p in cpts if p[3] == "+")
+        srsb = min(nf, len(cpts) - nf) / len(cpts)
+        out.append((bp5, bp3, svlen, len(tids), srcons, srsb))
+
+    # one inversion has two reciprocal junctions (its left and right breakpoints) that can land in
+    # separate clusters; merge candidates that substantially overlap into the single best-supported one.
+    out.sort(key=lambda c: c[3], reverse=True)               # by JR desc
+    merged = []
+    for c in out:
+        if not any(min(c[1], k[1]) - max(c[0], k[0]) > 0.5 * min(c[2], k[2]) for k in merged):
+            merged.append(c)
+    return sorted(merged, key=lambda c: c[0])
+
+
+# --------------------------------------------------------------------------- #
 # per-base read depth (pysam count_coverage)
 # --------------------------------------------------------------------------- #
+def validate_contig(bam, chrom, mtlen):
+    """Confirm `chrom` exists in `bam` and its reference length == mtlen (origin-coordinate safety).
+    Raises ValueError on either mismatch. Called UNCONDITIONALLY from main() so a bad --chrom/--mtlen
+    still fails cleanly on samples where per_base_depth is later skipped (no junctions, no --call-inv)."""
+    with pysam.AlignmentFile(bam, "rb") as af:
+        if chrom not in af.references:
+            raise ValueError("contig %r not found in %s" % (chrom, bam))
+        reflen = af.get_reference_length(chrom)
+        if reflen != mtlen:
+            raise ValueError("--mtlen %d != %s length %d in %s" % (mtlen, chrom, reflen, bam))
+
+
 def per_base_depth(bam, chrom, mtlen):
-    """Per-base read depth over `chrom`, as a 1-based array of length mtlen+1.
+    """Per-base read depth over `chrom`, as a 1-based array of length mtlen+1. The contig and its
+    length are pre-validated by validate_contig() in main(), so this assumes they are consistent.
 
     count_coverage sums A/C/G/T base counts, so it excludes deletions/ref-skips and (with
     read_callback="all") skips unmapped/secondary/qcfail/dup reads; quality_threshold=0
@@ -377,11 +486,6 @@ def per_base_depth(bam, chrom, mtlen):
     """
     dep = [0] * (mtlen + 1)  # 1-based
     with pysam.AlignmentFile(bam, "rb") as af:
-        if chrom not in af.references:
-            raise ValueError("contig %r not found in %s" % (chrom, bam))
-        reflen = af.get_reference_length(chrom)
-        if reflen != mtlen:
-            raise ValueError("--mtlen %d != %s length %d in %s" % (mtlen, chrom, reflen, bam))
         a, c, g, t = af.count_coverage(chrom, 0, mtlen, quality_threshold=0)
         for i in range(mtlen):
             dep[i + 1] = a[i] + c[i] + g[i] + t[i]
@@ -455,7 +559,7 @@ def spanning_count(span_by_b, bp5, bp3):
 # Stage B: coverage corroboration, heteroplasmy, flags (replaces svCall.pl)
 # --------------------------------------------------------------------------- #
 # tidy/long TSV column order (parse by NAME downstream, not position)
-TAB_COLUMNS = ["sample", "chrom", "pos_bp5", "end_bp3", "svlen", "svclaim", "jr", "sr",
+TAB_COLUMNS = ["sample", "chrom", "svtype", "pos_bp5", "end_bp3", "svlen", "svclaim", "jr", "sr",
                "af_junction", "af_coverage", "afdiff", "cvgr", "flank_dp", "homlen",
                "homseq", "delclass", "common", "ngene", "gene_list", "hgvs", "filter", "flags",
                "srcons", "srsb", "jsup",          # split-read evidence lens (depth-independent)
@@ -544,6 +648,136 @@ def svimpact_score(gene_list, bp5, end, svlen, mlc):
     return score, band, mlc_mean, len(cplx)
 
 
+def build_record(rec, chrom, sample):
+    """Build (pos, VCF line, tab row) for one call. `svtype` parameterizes the format so DEL/DUP/INV
+    share one emitter: SVLEN is negative for DEL (a loss) and positive for DUP/INV; `DELCLASS`/`COMMON`
+    are DEL-only; `AFC` is the dosage AF for DEL/DUP and `.` (CN-neutral) for INV. With `svtype="DEL"`
+    this reproduces the deletion record byte-for-byte (modulo the added `svtype` tab column)."""
+    svtype = rec["svtype"]
+    afc, afdiff = rec["afc"], rec["afdiff"]
+    afc_s = "%.3f" % afc if afc is not None else "."
+    afdiff_s = "%.3f" % afdiff if afdiff is not None else "."
+    svlen_signed = -rec["svlen"] if svtype == "DEL" else rec["svlen"]
+
+    info = ["SVTYPE=%s" % svtype, "END=%d" % rec["end"], "SVLEN=%d" % svlen_signed,
+            "SVCLAIM=%s" % rec["svclaim"]]
+    if rec["homlen"] > 0:
+        info += ["IMPRECISE", "CIPOS=0,%d" % rec["homlen"], "CIEND=0,%d" % rec["homlen"]]
+    info.append("HOMLEN=%d" % rec["homlen"])
+    if rec["homseq"]:
+        info.append("HOMSEQ=%s" % rec["homseq"])
+    if svtype == "DEL":
+        info.append("DELCLASS=%s" % rec["delclass"])
+    if rec["gene_list"]:
+        info.append("GENE=%s" % ",".join(rec["gene_list"]))
+    info.append("NGENE=%d" % len(rec["gene_list"]))
+    if rec["common"]:
+        info.append("COMMON")
+    info.append("HGVS=%s" % rec["hgvs"])
+    info += ["JR=%d" % rec["jr"], "SR=%d" % rec["sr"], "AFJ=%.3f" % rec["afj"], "AFC=%s" % afc_s,
+             "AFDIFF=%s" % afdiff_s, "CVGR=%.3f" % rec["ratio"],
+             "SRCONS=%.3f" % rec["srcons"], "SRSB=%.3f" % rec["srsb"], "JSUP=%s" % rec["jsup"],
+             "SVCONF=%s" % (rec["svconf"] if rec["svconf"] is not None else "."),
+             "SVIMPACT=%d" % rec["svimpact"], "SVIMPACT_BAND=%s" % rec["svimpact_band"]]
+    info += rec["flags"]
+
+    fmt_val = "0/1:%d:%d,%d:%s:%d" % (rec["med_fl"], rec["sr"], rec["jr"], afc_s, rec["jr"])
+    vcf_line = "%s\t%d\t.\t%s\t<%s>\t.\t%s\t%s\tGT:DP:AD:AF:SR\t%s" % (
+        chrom, rec["bp5"], rec["refbase"], svtype, rec["flt"], ";".join(info), fmt_val)
+    tab_row = "\t".join(str(x) for x in [
+        sample, chrom, svtype, rec["bp5"], rec["end"], rec["svlen"], rec["svclaim"], rec["jr"], rec["sr"],
+        "%.3f" % rec["afj"], afc_s, afdiff_s, "%.3f" % rec["ratio"], rec["med_fl"],
+        rec["homlen"], rec["homseq"], rec["delclass"], 1 if rec["common"] else 0, len(rec["gene_list"]),
+        ",".join(rec["gene_list"]) if rec["gene_list"] else ".", rec["hgvs"],
+        rec["flt"], ",".join(rec["flags"]) if rec["flags"] else ".",
+        "%.3f" % rec["srcons"], "%.3f" % rec["srsb"], rec["jsup"],
+        rec["svconf"] if rec["svconf"] is not None else ".", rec["svimpact"], rec["svimpact_band"]])
+    return rec["bp5"], vcf_line, tab_row
+
+
+def call_inversions(args, seq, dep, masked, hp, dloop, numt, genes, mlc, m, maxsize,
+                    vcf_records, tab_rows):
+    """OPT-IN inversion path (--call-inv). Inversions are detected from OPPOSITE-strand junctions and
+    are copy-number-NEUTRAL, so there is no dosage corroboration — scoring is junction-only (AFJ), and
+    the posture is DETECT-AND-FLAG: a clean, strong, non-fragile BALANCED inversion PASSes; an INVDUP
+    (opposite-strand junction WITH a coverage gain), an origin (WRAP), or a fragile-weak junction does
+    not. AFC is reported `.` (undefined). See docs/SV_EVENT_TYPES.md §3.3."""
+    invs = extract_inversions(args.bam, args.chrom, args.minmapq, args.minsize, maxsize,
+                              args.pad, args.minsupport, m, args.srtol)
+    if not invs:
+        return
+    # right breakend keyed as bp3-1 to match the DEL spanning convention (count_spanning_boundaries
+    # keys on B and B+1), so AFJ uses the same gap for INV and DEL
+    boundaries = [b for (bp5, bp3, _sv, _jr, _c, _s) in invs for b in (bp5, bp3 - 1)]
+    span = count_spanning_boundaries(args.bam, args.chrom, boundaries, args.minmapq)
+    genome_med = trimmed_median([dep[i] for i in range(1, m + 1) if not masked(i)]) or 1.0
+    for (bp5, bp3, svlen, jr, srcons, srsb) in invs:
+        end = bp3
+        sr = min(span.get(bp5, 0), span.get(bp3 - 1, 0))     # wild-type reads spanning the breakpoints
+        afj = jr / (jr + sr) if (jr + sr) > 0 else 0.0
+
+        # INVDUP (fold-back) detection by a LOCAL coverage STEP, not a genome-median compare: the inverted
+        # arm duplicates sequence on ONE side of the junction, so one window (a flank or the inside) is
+        # ELEVATED vs the LOWER flank — an asymmetric step. A balanced inversion is copy-number-NEUTRAL
+        # (inside ≈ both flanks). Comparing locally (not vs the genome median) is robust to mtDNA's
+        # non-flat depth; masked() already excludes HP/DLOOP/NUMT/origin spikes.
+        cov = [trimmed_median(masked_depths(dep, lo, hi, m, masked)) for (lo, hi) in
+               ((bp5 - args.flank, bp5), (bp5, bp3), (bp3, bp3 + args.flank))]
+        base = min(cov[0], cov[2]) or genome_med             # the lower flank = the local CN-neutral level
+        ratio = max(cov) / base
+        invdup = ratio > 1.0 + args.gainpad                  # an asymmetric gain => fold-back inverted DUP
+        d_fl = genome_med
+        jsup = ("HIGH" if (srcons >= args.srmincons and jr >= args.minjr and srsb >= args.srminsb)
+                else "MOD" if srcons >= args.srmincons else "LOW")
+
+        flags = []
+        wrapf = (bp5 <= args.originpad or bp5 >= m - args.originpad
+                 or bp3 <= args.originpad or bp3 >= m - args.originpad)
+        if wrapf:
+            flags.append("WRAP")
+        in_hp = in_iv(hp, bp5) or in_iv(hp, bp3)
+        if in_hp:
+            flags.append("HP")
+        in_dloop = in_iv(dloop, bp5) or in_iv(dloop, bp3)
+        if in_dloop:
+            flags.append("DLOOP")
+        in_numt = (bp5 in numt) or (bp3 in numt)
+        if in_numt:
+            flags.append("NUMT")
+        if invdup:
+            flags.append("INVDUP")
+
+        in_fragile = in_dloop or in_numt or wrapf
+        weak_in_fragile = in_fragile and (afj < args.strongafj or jr < args.strongjr)
+        ifil = []
+        if jr < args.inv_minjr:
+            ifil.append("lowJR")
+        if afj < args.inv_minafj:
+            ifil.append("lowAFJ")
+        if wrapf:
+            ifil.append("WRAP")
+        if weak_in_fragile:
+            ifil.append("fragile_weakJ")
+        if invdup:
+            ifil.append("not_balanced")                      # a fold-back inverted DUP, not a balanced INV
+        flt = "PASS" if not ifil else ";".join(ifil)
+
+        refbase = seq[bp5 - 1].upper() if 1 <= bp5 <= len(seq) else "N"
+        hgvs = "NC_012920.1:m.%d_%dinv" % (bp5 + 1, end)
+        gene_list = genes_in_deletion(genes, bp5, bp3)       # genes within the inverted span
+        nfragile = sum((in_dloop, in_hp, in_numt, wrapf))
+        svconf = svconf_score(jr, afj, 0.0, False, 1.0, srcons, srsb, nfragile, wrapf, args.drop)
+        svimpact, svimpact_band, _, _ = svimpact_score(gene_list, bp5, end, svlen, mlc)
+        pos, vcf_line, tab_row = build_record(dict(
+            svtype="INV", bp5=bp5, end=end, svlen=svlen, refbase=refbase, flt=flt, svclaim="J",
+            jr=jr, sr=sr, afj=afj, afc=None, afdiff=None, ratio=ratio, med_fl=rnd(d_fl),
+            homlen=0, homseq="", delclass=".", common=False, gene_list=gene_list,
+            hgvs=hgvs, srcons=srcons, srsb=srsb, jsup=jsup, svconf=svconf,
+            svimpact=svimpact, svimpact_band=svimpact_band, flags=flags), args.chrom, args.sample)
+        vcf_records.append((pos, vcf_line))
+        tab_rows.append(tab_row)
+
+
 def call(args):
     maxsize = args.maxsize if args.maxsize else args.mtlen - 1
     m = args.mtlen
@@ -552,10 +786,16 @@ def call(args):
     seq = fa.fetch(args.chrom)
     fa.close()
 
+    validate_contig(args.bam, args.chrom, m)   # fail cleanly on bad --chrom/--mtlen, even if depth is skipped below
     junctions = extract_junctions(args.bam, args.chrom, args.minmapq,
                                   args.minsize, maxsize, args.pad, args.minsupport, m,
                                   args.minclip, args.srtol)
-    dep = per_base_depth(args.bam, args.chrom, m)
+    # Per-base depth is read ONLY by the per-junction dosage windows below and (under --call-inv) by
+    # call_inversions. On a sample with no junctions and no inversion path nothing reads it, so skip
+    # the whole-genome count_coverage — the dominant per-sample cost (~78% of runtime; ~2.2 s on a
+    # 2000x chrM). Byte-identical: dep stays None exactly when no consumer exists, and it is absent
+    # from the header/##callsvMasks provenance (the masks below are still loaded unconditionally).
+    dep = per_base_depth(args.bam, args.chrom, m) if (junctions or args.call_inv) else None
     # wild-type spanning reads for every junction boundary, in ONE BAM pass (not per junction)
     boundaries = [j[0] for j in junctions] + [j[1] - 1 for j in junctions]
     span_by_b = count_spanning_boundaries(args.bam, args.chrom, boundaries, args.minmapq)
@@ -700,8 +940,35 @@ def call(args):
         else:
             flt = ";".join(fil)
 
+        # --- (3b) OPT-IN tandem DUPLICATION (--call-dup; default off => the gain stays a non-PASS DEL,
+        #     the frozen behavior). A junction with a coverage GAIN over [bp5,bp3] is the tandem-dup
+        #     boundary, not a deletion: reclassify SVTYPE=DUP, flip the dosage AF to the GAIN fraction
+        #     (1+AFC = ratio), and PASS on a junction-corroborated gain off the origin / out of fragile
+        #     regions. Origin (WRAP) candidates are left to the deferred origin-resolution, not called. ---
+        svtype = "DEL"
+        if args.call_dup and cvg_gain and not wrapf:
+            # NOTE (v1): the discriminator is the coverage GAIN over [bp5,bp3] (a real deletion has a
+            # DROP, never a gain, so it is never mis-called here). The everted-vs-forward junction
+            # ORIENTATION is collapsed by extract_junctions and not re-derived, so the gain must carry
+            # the call — hence the NUMT/HP gates below (an artifact gain under a junction is the main
+            # residual FP). Wiring orientation through for a belt-and-suspenders check is deferred
+            # (docs/SV_EVENT_TYPES.md §3.2).
+            svtype = "DUP"
+            afc = max(0.0, min(1.0, ratio - 1.0))             # dup heteroplasmy = the gain fraction
+            afdiff = abs(afj - afc)
+            svclaim = "DJ" if dose else "J"                   # DJ only when the dosage gain is estimable
+            delclass, common = ".", False                     # DELCLASS/COMMON are deletion-only
+            dfil = []
+            if jr < args.minjr:   dfil.append("lowJR")
+            if afj < args.minafj: dfil.append("lowAFJ")
+            if afc < args.minaf:  dfil.append("low_dosage")   # gain below the min dosage AF
+            if weak_in_fragile:   dfil.append("fragile_weakJ")
+            if in_numt:           dfil.append("NUMT")         # NUMT artifacts are the dominant false DUP
+            if in_hp:             dfil.append("HP")           # homopolymer/STR slippage false gains
+            flt = "PASS" if not dfil else ";".join(dfil)
+
         refbase = seq[bp5 - 1].upper() if 1 <= bp5 <= len(seq) else "N"
-        hgvs = "NC_012920.1:m.%d_%ddel" % (bp5 + 1, end)
+        hgvs = "NC_012920.1:m.%d_%d%s" % (bp5 + 1, end, "dup" if svtype == "DUP" else "del")
 
         # --- (4) two ORTHOGONAL per-call scores (additive; see docs/SV_METHODS §9):
         #   SVCONF   = call confidence (true-vs-artifact), from depth-stable evidence - fragile penalty
@@ -710,40 +977,18 @@ def call(args):
         svconf = svconf_score(jr, afj, afc, dose, ratio, srcons, srsb, nfragile, wrapf, args.drop)
         svimpact, svimpact_band, mlc_mean, ncplx = svimpact_score(gene_list, bp5, end, svlen, mlc)
 
-        # INFO (site-level; sample identity is the genotype COLUMN, never an INFO field)
-        info = ["SVTYPE=DEL", "END=%d" % end, "SVLEN=%d" % (-svlen), "SVCLAIM=%s" % svclaim]
-        if homlen > 0:
-            info += ["IMPRECISE", "CIPOS=0,%d" % homlen, "CIEND=0,%d" % homlen]
-        info.append("HOMLEN=%d" % homlen)
-        if homseq:
-            info.append("HOMSEQ=%s" % homseq)
-        info.append("DELCLASS=%s" % delclass)
-        if gene_list:
-            info.append("GENE=%s" % ",".join(gene_list))
-        info.append("NGENE=%d" % len(gene_list))
-        if common:
-            info.append("COMMON")
-        info.append("HGVS=%s" % hgvs)
-        info += ["JR=%d" % jr, "SR=%d" % sr, "AFJ=%.3f" % afj, "AFC=%.3f" % afc,
-                 "AFDIFF=%.3f" % afdiff, "CVGR=%.3f" % ratio,
-                 "SRCONS=%.3f" % srcons, "SRSB=%.3f" % srsb, "JSUP=%s" % jsup,
-                 "SVCONF=%s" % (svconf if svconf is not None else "."),
-                 "SVIMPACT=%d" % svimpact, "SVIMPACT_BAND=%s" % svimpact_band]
-        info += flags
+        pos, vcf_line, tab_row = build_record(dict(
+            svtype=svtype, bp5=bp5, end=end, svlen=svlen, refbase=refbase, flt=flt, svclaim=svclaim,
+            jr=jr, sr=sr, afj=afj, afc=afc, afdiff=afdiff, ratio=ratio, med_fl=med_fl,
+            homlen=homlen, homseq=homseq, delclass=delclass, common=common, gene_list=gene_list,
+            hgvs=hgvs, srcons=srcons, srsb=srsb, jsup=jsup, svconf=svconf,
+            svimpact=svimpact, svimpact_band=svimpact_band, flags=flags), args.chrom, args.sample)
+        vcf_records.append((pos, vcf_line))
+        tab_rows.append(tab_row)
 
-        # FORMAT AF carries the PRIMARY (coverage-dosage) heteroplasmy AFC, not AFJ; AD = SR,JR.
-        fmt_val = "0/1:%d:%d,%d:%.3f:%d" % (med_fl, sr, jr, afc, jr)
-        vcf_records.append((bp5, "%s\t%d\t.\t%s\t<DEL>\t.\t%s\t%s\tGT:DP:AD:AF:SR\t%s"
-                            % (args.chrom, bp5, refbase, flt, ";".join(info), fmt_val)))
-
-        tab_rows.append("\t".join(str(x) for x in [
-            args.sample, args.chrom, bp5, end, svlen, svclaim, jr, sr,
-            "%.3f" % afj, "%.3f" % afc, "%.3f" % afdiff, "%.3f" % ratio, med_fl,
-            homlen, homseq, delclass, 1 if common else 0, len(gene_list),
-            ",".join(gene_list) if gene_list else ".", hgvs,
-            flt, ",".join(flags) if flags else ".",
-            "%.3f" % srcons, "%.3f" % srsb, jsup,
-            svconf if svconf is not None else ".", svimpact, svimpact_band]))
+    if args.call_inv:
+        call_inversions(args, seq, dep, masked, hp, dloop, numt, genes, mlc,
+                        m, maxsize, vcf_records, tab_rows)
 
     vcf_records.sort(key=lambda r: r[0])     # POS-sorted
     write_vcf(args, [r[1] for r in vcf_records], seq, masks_prov)
@@ -828,6 +1073,17 @@ def main():
     p.add_argument("--jminjr", type=int, default=8, help="min JR for a junction-only (depth-independent) PASS")
     p.add_argument("--jminafj", type=float, default=0.05, help="min corrected AFJ for a junction-only PASS")
     p.add_argument("--gainpad", type=float, default=0.10, help="coverage-gain tolerance; ratio>1+gainpad => DUP, blocks junction-only PASS")
+    # OPT-IN additional event classes (default OFF => deletion-only, the frozen path; see
+    # docs/SV_EVENT_TYPES.md). DUP reuses the same junction+coverage machinery (a gain candidate);
+    # INV adds a separate opposite-strand-junction branch.
+    p.add_argument("--call-dup", dest="call_dup", action="store_true",
+                   help="also call tandem DUPLICATIONS (a junction with a coverage GAIN) as SVTYPE=DUP")
+    p.add_argument("--call-inv", dest="call_inv", action="store_true",
+                   help="also call INVERSIONS (opposite-strand junctions, CN-neutral) as SVTYPE=INV")
+    p.add_argument("--inv-minafj", dest="inv_minafj", type=float, default=0.10,
+                   help="min junction VAF for an INV to PASS (detect-and-flag; INV has no dosage signal)")
+    p.add_argument("--inv-minjr", dest="inv_minjr", type=int, default=6,
+                   help="min opposite-strand junction reads for an INV to PASS")
     # split-read evidence lens (SRCONS/SRSB/JSUP) — depth-independent junction quality for curation
     p.add_argument("--srtol", type=int, default=5, help="bp tolerance on per-read deletion SIZE for the split-read consistency SRCONS")
     p.add_argument("--srmincons", type=float, default=0.7, help="min SRCONS for JSUP=MOD/HIGH (a clean, consistent junction)")

@@ -1,10 +1,10 @@
 ##fileformat=VCFv4.2
-##fileDate=20260622
+##fileDate=20260625
 ##source=MitoHPC_callsv (example output)
 ##reference=file://./RefSeq/chrM.fa
 ##contig=<ID=chrM,length=16569,md5=c68f52674c9fb33aef52dcf399755519>
 ##sample=sv_del4977_h30
-##callsv_command="./scripts/callsv.py --bam ./test/sv/bams/sv_del4977_h30.bam --ref ./RefSeq/chrM.fa --header ./scripts/sv.vcf --sample sv_del4977_h30 --out ./out/out/sv_del4977_h30/sv_del4977_h30.sv.vcf --tab ./out/out/sv_del4977_h30/sv_del4977_h30.sv.tab --version example --chrom chrM --mtlen 16569 --minmapq 20 --minclip 10 --minjr 3 --minsize 50 --maxsize 0 --pad 25 --drop 0.9 --flank 200 --mindepth 0 --trans 150 --minaf 0.03 --minafj 0.02 --affrac 0.30 --strongafj 0.05 --strongjr 10 --bigdel 8000 --bigminjr 8 --bigminafj 0.02 --jminjr 8 --jminafj 0.05 --gainpad 0.10 --srtol 5 --srmincons 0.7 --srminsb 0.1 --hp ./RefSeq/HP.bed.gz --numt ./RefSeq/NUMT.vcf.gz --dloop ./RefSeq/DLOOP.bed.gz --genes ./RefSeq/genes.bed.gz --mlc ./RefSeq/MLC.vcf.gz"
+##callsv_command="./scripts/callsv.py --bam ./test/sv/bams/sv_del4977_h30.bam --ref ./RefSeq/chrM.fa --header ./scripts/sv.vcf --sample sv_del4977_h30 --out ./out/out/sv_del4977_h30/sv_del4977_h30.sv.vcf --tab ./out/out/sv_del4977_h30/sv_del4977_h30.sv.tab --version example --chrom chrM --mtlen 16569 --minmapq 20 --minclip 10 --minjr 3 --minsize 50 --maxsize 0 --pad 25 --drop 0.9 --flank 200 --mindepth 0 --trans 150 --minaf 0.03 --minafj 0.02 --affrac 0.30 --strongafj 0.05 --strongjr 10 --bigdel 8000 --bigminjr 8 --bigminafj 0.02 --jminjr 8 --jminafj 0.05 --gainpad 0.10 --inv-minafj 0.10 --inv-minjr 6 --srtol 5 --srmincons 0.7 --srminsb 0.1 --hp ./RefSeq/HP.bed.gz --numt ./RefSeq/NUMT.vcf.gz --dloop ./RefSeq/DLOOP.bed.gz --genes ./RefSeq/genes.bed.gz --mlc ./RefSeq/MLC.vcf.gz"
 ##callsvMasks=hp:27,numt:381,dloop:6,genes:42,mlc:16568
 ##callsv_param_HP_SV_MINMAPQ=20
 ##callsv_param_HP_SV_MINCLIP=10
@@ -31,6 +31,8 @@
 ##callsv_param_HP_SV_SRMINCONS=0.7
 ##callsv_param_HP_SV_SRMINSB=0.1
 ##ALT=<ID=DEL,Description="Deletion">
+##ALT=<ID=DUP,Description="Tandem duplication (opt-in --call-dup): a split-read junction with a coverage GAIN over the duplicated span">
+##ALT=<ID=INV,Description="Inversion (opt-in --call-inv): opposite-strand split-read junctions, copy-number-neutral">
 ##FILTER=<ID=PASS,Description="Deletion passed: a split-read junction corroborated by a coverage drop (SVCLAIM=DJ) OR high-confidence split reads alone (SVCLAIM=J); see SVCLAIM">
 ##FILTER=<ID=lowJR,Description="Fewer than HP_SV_MINJR junction-supporting reads">
 ##FILTER=<ID=no_cvg_drop,Description="medInside/medFlank above HP_SV_DROP (split-read only, no coverage corroboration)">
@@ -41,9 +43,10 @@
 ##FILTER=<ID=unexplained_drop,Description="Coverage drop not corroborated by a proportional junction: AFJ < HP_SV_AFFRAC*AFC (likely a coverage artifact / NUMT / mappability dip)">
 ##FILTER=<ID=fragile_weakJ,Description="Breakpoint in a fragile region (D-loop / NUMT / origin) without strong junction support (AFJ>=HP_SV_STRONGAFJ and JR>=HP_SV_STRONGJR)">
 ##FILTER=<ID=bigdel_weakJ,Description="Very large deletion (>=HP_SV_BIGDEL bp) with weak junction support (JR<HP_SV_BIGMINJR or AFJ<HP_SV_BIGMINAFJ)">
-##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant">
-##INFO=<ID=END,Number=1,Type=Integer,Description="End position: last deleted base (= POS + |SVLEN|)">
-##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Difference in length between REF and ALT alleles (negative for DEL; VCFv4.2 convention)">
+##FILTER=<ID=not_balanced,Description="Inversion record carrying a coverage gain = an inverted DUP (fold-back, INVDUP flag), not a balanced copy-number-neutral inversion">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant: DEL (deletion), DUP (tandem duplication, --call-dup), INV (inversion, --call-inv)">
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position: last deleted base for DEL (= POS + |SVLEN|); the duplicated/inverted span end for DUP/INV">
+##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Difference in length between REF and ALT alleles: NEGATIVE for DEL (a loss), POSITIVE for DUP/INV (VCFv4.2 convention)">
 ##INFO=<ID=SVCLAIM,Number=A,Type=String,Description="Evidence claim (VCF4.4): DJ=depth+junction together, J=junction/adjacency alone. A PASS with SVCLAIM=J was confirmed by high-confidence split reads alone (no required coverage drop); DJ by both. (D=depth/abundance-only is reserved per spec but not emitted: a depth-only call never PASSes here.)">
 ##INFO=<ID=IMPRECISE,Number=0,Type=Flag,Description="Imprecise breakpoint (ambiguous within a direct repeat / microhomology)">
 ##INFO=<ID=CIPOS,Number=.,Type=Integer,Description="Confidence interval around POS for imprecise variants (offset pairs, each spanning 0)">
@@ -72,6 +75,7 @@
 ##INFO=<ID=HP,Number=0,Type=Flag,Description="Breakpoint inside a homopolymer run (RefSeq/HP.bed.gz)">
 ##INFO=<ID=DLOOP,Number=0,Type=Flag,Description="Breakpoint in the control region / D-loop (RefSeq/DLOOP.bed.gz)">
 ##INFO=<ID=WRAP,Number=0,Type=Flag,Description="Breakpoint near the artificial origin / origin-crossing">
+##INFO=<ID=INVDUP,Number=0,Type=Flag,Description="Inversion with a co-located coverage gain = a fold-back inverted duplication (Sniffles2 INVDUP), not a balanced inversion">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
 ##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Flanking wild-type read depth (round of medFlank)">
 ##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths for the REF (spanning) and ALT (junction) alleles: SR,JR">
