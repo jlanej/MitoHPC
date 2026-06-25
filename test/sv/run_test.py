@@ -361,7 +361,7 @@ def check_plots(outdir):
         return pref, man, (os.path.exists(man) and os.path.getsize(man) > 0)
 
     pref, man, has = run_plot("sv_del4977_h30")
-    png_ok = has and os.path.exists(open(man).readline().rstrip("\n").split("\t")[-1])
+    png_ok = has and os.path.exists(open(man).readline().rstrip("\n").split("\t")[6])  # png is column 7
     rep = os.path.join(outdir, "plot_report.html")
     subprocess.run([PYEXE, os.path.join(SDIR, "svReport.py"), "--tab", pref + ".sv.tab",
                     "--plots", man, "--nsamples", "1", "--out", rep], capture_output=True, text=True)
@@ -370,6 +370,21 @@ def check_plots(outdir):
            "del4977 -> PNG + manifest embedded in report")
     _, dman, dhas = run_plot("sv_dloop")
     record("samplot_filter", not dhas, "DLOOP-flagged call correctly NOT visualized")
+
+    # HP_SV_PLOT_ALL: the DLOOP call (filtered out by default, above) IS visualized in all-plots mode,
+    # the manifest carries the filter/flags columns, and the report marks plotAll (unfiltered gallery).
+    apref = os.path.join(outdir, "plotall_sv_dloop")
+    subprocess.run(["bash", os.path.join(SDIR, "callSV.sh"), "sv_dloop", os.path.join(BAMS, "sv_dloop.bam"), apref],
+                   env=dict(env, HP_SV_PLOT_ALL="1"), capture_output=True, text=True)
+    aman = apref + ".sv.plots.tsv"
+    cols = open(aman).readline().rstrip("\n").split("\t") if os.path.exists(aman) else []
+    arep = os.path.join(outdir, "plotall_report.html")
+    subprocess.run([PYEXE, os.path.join(SDIR, "svReport.py"), "--tab", apref + ".sv.tab", "--plots", aman,
+                    "--plot-dedup", "0", "--plot-all", "--nsamples", "1", "--out", arep],
+                   capture_output=True, text=True)
+    ah = open(arep).read() if os.path.exists(arep) else ""
+    record("samplot_all_mode", len(cols) >= 9 and '"plotAll":true' in ah and 'status' in ah,
+           "HP_SV_PLOT_ALL visualizes the DLOOP call; manifest carries filter/flags; report marks plotAll")
 
 
 def check_recall(outdir):

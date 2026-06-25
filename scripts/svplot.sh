@@ -4,8 +4,8 @@ set -eu
 # Generate samplot PNGs for the VISUALIZABLE subset of a sample's SV calls, on the LIVE
 # $O.bam. Invoked by callSV.sh while the BAM is still alive (filter.sh deletes it right
 # after); writes ${O}.sv.<bp5>_<end>.png per selected call and appends the manifest
-# ${O}.sv.plots.tsv (sample, bp5, end, afc, svlen, svconf, png) that getSVSummary.sh
-# collects and svReport.py embeds.
+# ${O}.sv.plots.tsv (sample, bp5, end, afc, svlen, svconf, png, filter, flags) that getSVSummary.sh
+# collects and svReport.py embeds (png is column 7 for back-compat; filter/flags are appended).
 #
 # DEFAULT-OFF: only runs when HP_SV_PLOT is non-empty (mitohpc-batch-container.sh turns it
 # on; the bare pipeline stays unchanged). Degrades gracefully if samplot is unavailable.
@@ -18,6 +18,10 @@ set -eu
 #                                    REPEAT is NOT skipped — the real common deletion carries it)
 #   HP_SV_PLOT_MINSVCONF=    optional extra floor on the confidence score (empty = off)
 #   HP_SV_PLOT_MAX=200       safety cap on plots per sample
+#   HP_SV_PLOT_ALL=1         escape hatch: plot EVERY call (flips the PASS/MINAF/SKIP DEFAULTS to
+#                            permissive so nothing is filtered out; an explicitly-set PASS/MINAF/SKIP
+#                            still wins). Pairs with getSVSummary.sh defaulting --plot-dedup to 0, so
+#                            the report embeds them all. Rarely needed; used for the example report.
 #
 # Args:  1: sample   2: BAM (live $O.bam)   3: output prefix $O
 #########################################################################################
@@ -53,14 +57,26 @@ if ! command -v "$SAMPLOT" >/dev/null 2>&1; then
   exit 0
 fi
 
-PASS=${HP_SV_PLOT_PASS:-1}
-MINAF=${HP_SV_PLOT_MINAF:-0.03}
-SKIP=${HP_SV_PLOT_SKIP:-HP,DLOOP,NUMT}
+# HP_SV_PLOT_ALL=1 plots EVERY call: it only changes the DEFAULTS of PASS/MINAF/SKIP to permissive,
+# so an explicitly-set HP_SV_PLOT_PASS/MINAF/SKIP still overrides (e.g. ALL=1 + HP_SV_PLOT_SKIP=NUMT
+# plots everything except NUMT). The `-` (not `:-`) on SKIP honors an explicit empty value.
+if [ -n "${HP_SV_PLOT_ALL:-}" ]; then
+  PASS=${HP_SV_PLOT_PASS:-0}
+  MINAF=${HP_SV_PLOT_MINAF:-0}
+  SKIP=${HP_SV_PLOT_SKIP-}
+else
+  PASS=${HP_SV_PLOT_PASS:-1}
+  MINAF=${HP_SV_PLOT_MINAF:-0.03}
+  SKIP=${HP_SV_PLOT_SKIP:-HP,DLOOP,NUMT}
+fi
 MINSVCONF=${HP_SV_PLOT_MINSVCONF:-}
 MAX=${HP_SV_PLOT_MAX:-200}
 
 : > "$MAN"
-# select visualizable rows from the tidy tab (parse by column NAME); emit: bp5 end afc svlen svconf
+# select visualizable rows from the tidy tab (parse by column NAME); emit: bp5 end afc svlen svconf filter flags.
+# filter/flags are carried so the report can label each plot (esp. in HP_SV_PLOT_ALL mode, where non-PASS /
+# WRAP / artifact calls are shown and a viewer needs to know which is which — a WRAP/origin call renders as a
+# misleading genome-spanning event under samplot's linear view).
 awk -F'\t' -v pass="$PASS" -v minaf="$MINAF" -v skip="$SKIP" -v minsc="$MINSVCONF" -v mx="$MAX" '
   NR==1{ for(i=1;i<=NF;i++) h[$i]=i; next }
   { n++
@@ -72,13 +88,14 @@ awk -F'\t' -v pass="$PASS" -v minaf="$MINAF" -v skip="$SKIP" -v minsc="$MINSVCON
     for (j=1;j<=m;j++) if (sk[j]!="" && index(fl, "," sk[j] ",")) { drop=1; break }
     if (drop) next
     if (++k > mx) next
-    print $h["pos_bp5"] "\t" $h["end_bp3"] "\t" $h["af_coverage"] "\t" $h["svlen"] "\t" $h["svconf"]
-  }' "$TAB" | while IFS=$'\t' read -r bp5 end afc svlen svconf; do
+    print $h["pos_bp5"] "\t" $h["end_bp3"] "\t" $h["af_coverage"] "\t" $h["svlen"] "\t" $h["svconf"] "\t" $h["filter"] "\t" $h["flags"]
+  }' "$TAB" | while IFS=$'\t' read -r bp5 end afc svlen svconf filter flags; do
   png="$O.sv.${bp5}_${end}.png"
   title="$S  m.$((bp5+1))_${end}del  VAF=$afc"
   if "$SAMPLOT" plot -n "$title" -b "$BAM" -o "$png" -c "$MT" -s "$bp5" -e "$end" -t DEL $aopt >/dev/null 2>&1 \
      && [ -s "$png" ]; then
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$S" "$bp5" "$end" "$afc" "$svlen" "$svconf" "$png" >> "$MAN"
+    # png stays column 7 (CI/back-compat); filter/flags appended after it
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$S" "$bp5" "$end" "$afc" "$svlen" "$svconf" "$png" "${filter:-.}" "${flags:-.}" >> "$MAN"
   else
     echo "[svplot] WARNING: samplot failed for $S m.${bp5}_${end}" >&2
   fi

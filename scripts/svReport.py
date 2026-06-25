@@ -125,13 +125,17 @@ def load_plots(path, dedup_bp=25):
                 if len(f) < 7:
                     continue
                 smp, bp5, end, afc, svlen, svconf, png = f[:7]
+                filt = f[7] if len(f) > 7 else ""      # optional (appended after png for back-compat)
+                flags = f[8] if len(f) > 8 else ""
                 key = (smp, bp5, end)
                 if key in seen or not os.path.exists(png):
                     continue
                 seen.add(key)
                 try:
                     raw.append({"smp": smp, "bp5": int(bp5), "end": int(end), "afc": float(afc or 0),
-                                "svlen": int(svlen or 0), "svconf": svconf, "png": png})
+                                "svlen": int(svlen or 0), "svconf": svconf, "png": png,
+                                "filter": (filt if filt not in ("", ".") else ""),
+                                "flags": (flags if flags not in ("", ".") else "")})
                 except ValueError:
                     continue
     n_total = len(raw)
@@ -175,6 +179,9 @@ def main():
     ap.add_argument("--plots", help="samplot manifest TSV (sample,bp5,end,afc,svlen,svconf,png) to embed")
     ap.add_argument("--plot-dedup", type=int, default=25,
                     help="collapse plots whose breakpoints cluster within N bp to one representative (0=off)")
+    ap.add_argument("--plot-all", action="store_true",
+                    help="gallery shows EVERY call unfiltered/unsubsampled (sets the report's wording; "
+                         "pair with the permissive svplot.sh filter + --plot-dedup 0)")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
@@ -188,6 +195,7 @@ def main():
             "mtlen": args.mtlen, "nsamples": nsamp, "ncalls": len(calls),
             "generated": datetime.date.today().strftime("%Y-%m-%d"),
             "plotsTotal": plots_total, "plotDedup": args.plot_dedup,
+            "plotAll": bool(args.plot_all),
         },
         "features": feats,
         "calls": calls,
@@ -206,9 +214,9 @@ TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MitoHPC — mtDNA structural-variant cohort report</title>
 <style>
-:root{--bg:#fbfbf9;--surf:#ffffff;--ink:#1d1d1b;--mut:#56554f;--hint:#84837a;--line:#e3e1d8;--accent:#534ab7}
-:root[data-svtheme=dark]{--bg:#13120c;--surf:#211f16;--ink:#f3f2e9;--mut:#bdbcb0;--hint:#92917f;--line:#403d31;--accent:#bcb6ef}
-@media(prefers-color-scheme:dark){:root:not([data-svtheme=light]){--bg:#13120c;--surf:#211f16;--ink:#f3f2e9;--mut:#bdbcb0;--hint:#92917f;--line:#403d31;--accent:#bcb6ef}}
+:root{--bg:#fbfbf9;--surf:#ffffff;--ink:#1d1d1b;--mut:#56554f;--hint:#84837a;--line:#e3e1d8;--accent:#534ab7;--ok:#137333;--warn:#9a5b00}
+:root[data-svtheme=dark]{--bg:#13120c;--surf:#211f16;--ink:#f3f2e9;--mut:#bdbcb0;--hint:#92917f;--line:#403d31;--accent:#bcb6ef;--ok:#5fbf85;--warn:#e6a85c}
+@media(prefers-color-scheme:dark){:root:not([data-svtheme=light]){--bg:#13120c;--surf:#211f16;--ink:#f3f2e9;--mut:#bdbcb0;--hint:#92917f;--line:#403d31;--accent:#bcb6ef;--ok:#5fbf85;--warn:#e6a85c}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
 .wrap{max-width:1180px;margin:0 auto;padding:28px 22px 60px}
@@ -302,9 +310,9 @@ details{margin:8px 0}summary{cursor:pointer;color:var(--accent);font-size:14px}
 </style>
 <section id="plotsection" hidden>
 <h2>structural-variant plots <span class="muted" style="font-weight:400;font-size:13px">(samplot)</span></h2>
-<p class="sub">Curated calls &mdash; <b>PASS</b>, heteroplasmy above the configured floor, and breakpoints <b>outside</b> the homopolymer / D-loop / NUMT artifact regions &mdash; rendered with <span class="mono">samplot</span> (read depth, split reads, the deletion span). <b>Subsampling:</b> calls that share a breakpoint site <span id="plotround"></span> are collapsed to <b>one representative</b> (the highest-heteroplasmy call); the <b>samples</b> column shows how many samples carried that site. <span id="plotcount" class="muted"></span> Click a row to view its image. (Filter &amp; subsampling are configurable via <span class="mono">HP_SV_PLOT_*</span> / <span class="mono">--plot-dedup</span>.)</p>
+<p class="sub" id="plotdesc"></p>
 <div class="plotwrap">
-  <table id="plottbl"><thead><tr><th>sample</th><th>breakpoints (m.)</th><th class="n">size</th><th class="n">VAF</th><th class="n">SVCONF</th><th class="n">samples</th></tr></thead><tbody></tbody></table>
+  <table id="plottbl"><thead><tr><th>sample</th><th>breakpoints (m.)</th><th class="n">size</th><th class="n">VAF</th><th class="n">SVCONF</th><th class="n">samples</th><th>status</th></tr></thead><tbody></tbody></table>
   <figure class="plotfig"><img id="samplotimg" alt="samplot image"><figcaption id="plotcap" class="muted">select a row to view its samplot image</figcaption></figure>
 </div>
 </section>
@@ -461,13 +469,21 @@ function legend(){$('legend').innerHTML=CO.map(c=>`<span><span class="sw" style=
 function showPlot(i,row){document.querySelectorAll('#plottbl tbody tr').forEach(r=>r.classList.remove('sel'));
   if(row)row.classList.add('sel');const p=PLOTS[i];
   $('samplotimg').src='data:image/png;base64,'+p.png;
-  $('plotcap').textContent=`${p.smp} · m.${p.bp5+1}_${p.end}del · ${p.svlen.toLocaleString()} bp · VAF ${pct(p.afc)} · SVCONF ${p.svconf}`+((p.nsmp||1)>1?` · representative of ${p.nsmp} samples`:'')}
+  $('plotcap').textContent=`${p.smp} · m.${p.bp5+1}_${p.end}del · ${p.svlen.toLocaleString()} bp · VAF ${pct(p.afc)} · SVCONF ${p.svconf}`+(p.filter&&p.filter!=='PASS'?` · ${p.filter}`:'')+(p.flags?` · flags: ${p.flags}`:'')+((p.nsmp||1)>1?` · representative of ${p.nsmp} samples`:'')}
+function statusCell(p){if(!p.filter)return '';
+  if(p.filter==='PASS')return `<span style="color:var(--ok);font-weight:600">PASS</span>`;
+  return `<span style="color:var(--warn);font-weight:600" title="flags: ${p.flags||p.filter}">${p.filter}</span>`}
 function buildPlots(){if(!PLOTS.length)return;$('plotsection').hidden=false;
-  const dd=M.plotDedup||0, tot=M.plotsTotal||PLOTS.length;
-  $('plotround').textContent=dd>0?`(rounded to ${dd} bp)`:'';
-  $('plotcount').textContent=`Showing ${PLOTS.length} representative site${PLOTS.length==1?'':'s'} from ${tot} visualizable call${tot==1?'':'s'}.`;
+  const dd=M.plotDedup||0, tot=M.plotsTotal||PLOTS.length, n=PLOTS.length;
+  const filt=M.plotAll
+    ?`<b>All</b> calls &mdash; <b>no</b> PASS / heteroplasmy / artifact-region filtering (non-PASS and HP / D-loop / NUMT / WRAP calls included)`
+    :`<b>Curated</b> calls &mdash; <b>PASS</b>, heteroplasmy above the configured floor, and breakpoints <b>outside</b> the homopolymer / D-loop / NUMT artifact regions`;
+  const sub=dd>0
+    ?`<b>Subsampling:</b> calls sharing a breakpoint site (rounded to ${dd} bp) are collapsed to <b>one representative</b> (the highest-heteroplasmy call); the <b>samples</b> column is how many samples carried that site. Showing ${n} representative site${n==1?'':'s'} from ${tot} visualizable call${tot==1?'':'s'}.`
+    :`<b>No subsampling</b> &mdash; every visualizable call is shown (the <b>samples</b> column is the per-site sample count). Showing all ${n} call${n==1?'':'s'}.`;
+  $('plotdesc').innerHTML=`${filt}, rendered with <span class="mono">samplot</span> (read depth, split reads, the deletion span). ${sub} Click a row to view its image. (Configurable via <span class="mono">HP_SV_PLOT_*</span> / <span class="mono">HP_SV_PLOT_ALL</span> / <span class="mono">--plot-dedup</span>.)`;
   const tb=document.querySelector('#plottbl tbody');
-  tb.innerHTML=PLOTS.map((p,i)=>`<tr data-i="${i}"><td>${p.smp}</td><td class="mono">m.${p.bp5+1}_${p.end}del</td><td class="n">${p.svlen.toLocaleString()}</td><td class="n">${pct(p.afc)}</td><td class="n">${p.svconf}</td><td class="n">${p.nsmp||1}</td></tr>`).join('');
+  tb.innerHTML=PLOTS.map((p,i)=>`<tr data-i="${i}"><td>${p.smp}</td><td class="mono">m.${p.bp5+1}_${p.end}del</td><td class="n">${p.svlen.toLocaleString()}</td><td class="n">${pct(p.afc)}</td><td class="n">${p.svconf}</td><td class="n">${p.nsmp||1}</td><td>${statusCell(p)}</td></tr>`).join('');
   tb.querySelectorAll('tr').forEach(r=>r.onclick=()=>showPlot(+r.dataset.i,r));
   showPlot(0,tb.querySelector('tr'))}
 

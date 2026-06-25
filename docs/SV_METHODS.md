@@ -215,9 +215,19 @@ if [ $HP_SV ] && [ "$HP_SV" == "callsv" ] ; then
 fi
 ```
 
+**Provenance — reference-aligned, never the consensus.** `$O.bam` is the **iteration-1** alignment of the
+subsampled, deduplicated reads against the **shared reference** circularized genome `$HP_MTC` (`chrMC` =
+rCRS + `HP_E` bp; `filter.sh`: `bwa mem $HP_RDIR/$HP_MTC`). The gated SV block runs **before** MitoHPC
+builds the per-sample **consensus** `$OS.fa` and its iteration-2 alignment `$OS.bam` (which exist only for
+second-iteration *SNV* refinement) — the SV caller is handed `$O.bam` and **never reads `$OS.bam`**. This
+is deliberate: aligning against a personalized consensus could **mask** a large deletion, whereas calling
+against the canonical reference keeps the split-read + coverage-drop signal intact. (The consensus is also
+SNV/small-indel only and full-length, so it carries no large deletion regardless.) `svplot.sh` is given the
+same `$O.bam`, so each samplot image is consistent with the call it illustrates.
+
 | Reads (never modified) | Writes (new `*.sv.*` only) |
 |---|---|
-| `$O.bam` — MitoHPC's circular-aware, subsampled, deduplicated chrM alignment (1..16569) | `$O.sv.vcf` — per-sample deletion calls (VCFv4.2, `SVTYPE=DEL`) |
+| `$O.bam` — MitoHPC's **iteration-1, reference-aligned**, circular-aware, subsampled, deduplicated chrM alignment (1..16569; never the consensus `$OS.bam`) | `$O.sv.vcf` — per-sample deletion calls (VCFv4.2, `SVTYPE=DEL`) |
 | `RefSeq/$HP_MT.fa` — reference (for the VCF REF base) | `$O.sv.tab` — flat table (same calls) |
 | `RefSeq/{HP,DLOOP}.bed.gz`, `RefSeq/NUMT.vcf.gz` — FP masks (flags only) | (cohort, via `getSVSummary.sh`) `$ODIR/{sv.tab, sv.merged.vcf.gz,` |
 | `RefSeq/genes.bed.gz` — mtDNA features for `GENE`/`NGENE` annotation | `sv.sites.vcf.gz, sv.report.html}` |
@@ -443,7 +453,7 @@ the **corrected** `AFJ`, so neither re-admits the depth-noise artifacts (whose `
 |---|---|
 | `lowJR` | `JR < HP_SV_MINJR` (3) |
 | `no_cvg_drop` | `CVGR > HP_SV_DROP` (0.9 ⇒ requires ≥10% dosage drop) |
-| `WRAP` | a breakpoint within `originpad` (20 bp) of the origin |
+| `WRAP` | a breakpoint within `originpad` (20 bp) of the origin, **or** a majority-arc deletion (`svlen > mtlen/2`) with no coverage drop = the inverted complementary arc of an origin-crossing deletion (§8) |
 | `lowDP` | `HP_SV_MINDP > 0` and flank depth `< HP_SV_MINDP` (default 0 ⇒ disabled) |
 | `low_dosage` | `AFC < HP_SV_MINAF` (0.03) — the dosage drop itself must clear MINAF |
 | `lowAFJ` | `AFJ < HP_SV_MINAFJ` (0.02) — depth-robust junction-support floor |
@@ -489,7 +499,7 @@ cohorts (see the tissue note below); calibrate per cohort.
 | Flag | Meaning (fires if either breakpoint matches) |
 |---|---|
 | `REPEAT` | within `HP_SV_PAD` of the del4977 13 bp direct repeat (m.8470–8482 or m.13447–13459) |
-| `WRAP` | within 20 bp of the artificial origin |
+| `WRAP` | within 20 bp of the artificial origin, or a majority-arc (`svlen > mtlen/2`) no-coverage-drop deletion = the inverted complementary arc of an origin-crossing event (§8) |
 | `HP` | inside a homopolymer run (`RefSeq/HP.bed.gz`) |
 | `DLOOP` | inside the control region (`RefSeq/DLOOP.bed.gz`) |
 | `NUMT` | exact position in `RefSeq/NUMT.vcf.gz` |
@@ -682,12 +692,21 @@ re-implementing it — but note (third bullet) this is detection input, not full
 - In `callsv.py`, every coverage window wraps modulo `mtlen`, so flanks straddling 16569/1 are
   computed correctly.
 - Junction `svlen` is, however, computed **linearly** (`bp3-bp5-1`, no modulo). A deletion whose
-  *deleted arc* spans the origin therefore has no positive-length linear form: it is detected-but-
-  **suppressed** (negative svlen → dropped at the `minsize` gate, or `WRAP`-flagged out of PASS),
-  never mis-called. So origin-spanning deletions are not yet *resolved*, only safely withheld.
-- Relatedly, v1 **does not** disambiguate a circular deletion from its complementary-arc duplication;
-  junctions at the origin are flagged `WRAP` and kept out of PASS (deferred to a future tier — see
-  roadmap in `SV_CALLING.md` §10).
+  *deleted arc* spans the origin therefore has no faithful positive-length linear form, and surfaces
+  one of two ways — both safely withheld, never mis-called:
+  - *as the same (small) arc* → negative/zero linear svlen → dropped at the `minsize` gate; or
+  - *as its COMPLEMENT* — the near-genome-length **retained** arc reported as the "deletion"
+    (`svlen > mtlen/2`). Because that span is actually retained, it shows **full coverage** (no dosage
+    drop); coverage is the disambiguator (a real majority-arc deletion would show a drop). A
+    majority-arc "deletion" with no coverage drop is therefore flagged `WRAP` (in addition to the
+    ±`originpad` breakpoint test), which blanks its `SVCONF` and keeps it out of PASS. *Example:* the
+    mock `sv_origin` (a true 368 bp origin-crossing deletion) is reported as `m.301_16344del`
+    (16,044 bp) with `CVGR≈1.0`, and is `WRAP`-flagged with `SVCONF='.'` and `FILTER=no_cvg_drop;WRAP`.
+- Relatedly, v1 **does not** *resolve* a circular deletion into its true (smaller) origin-crossing
+  arc; it only withholds it — such junctions are `WRAP`-flagged and kept out of PASS (full resolution,
+  and del-vs-complementary-arc-duplication disambiguation via origin-preservation, deferred to a future
+  tier — design captured in [`SV_DELDUP_RESOLUTION.md`](SV_DELDUP_RESOLUTION.md); roadmap in
+  `SV_CALLING.md` §10).
 
 ---
 

@@ -67,12 +67,16 @@ done
 [ -s "$ODIR/sv.plots.tsv" ] && popt="--plots $ODIR/sv.plots.tsv"
 
 # (4) interactive, self-contained HTML report (svReport.py is stdlib-only — no pysam needed;
-#     embeds any samplot PNGs as base64 so the report stays single-file/offline)
+#     embeds any samplot PNGs as base64 so the report stays single-file/offline).
+#     HP_SV_PLOT_ALL=1 (the "show everything" mode) embeds EVERY plot: default --plot-dedup to 0 (no
+#     representative collapsing) and tell the report its gallery is unfiltered/unsubsampled (--plot-all).
 RDIR=${HP_RDIR:-$(cd "$SDIR/../RefSeq" && pwd)}
 N=$(grep -vc '^#' "$HP_IN")
 gopt=""; [ -s "$RDIR/genes.bed.gz" ] && gopt="--genes $RDIR/genes.bed.gz"
+if [ -n "${HP_SV_PLOT_ALL:-}" ]; then DEDUP=${HP_SV_PLOT_DEDUP:-0}; allopt="--plot-all"
+else                                  DEDUP=${HP_SV_PLOT_DEDUP:-25}; allopt=""; fi
 "${HP_PYTHON:-python3}" "$SDIR/svReport.py" --tab "$ODIR/sv.tab" --nsamples "$N" \
-  --mtlen "${HP_MTLEN:-16569}" --chrom "${HP_MT:-chrM}" --plot-dedup "${HP_SV_PLOT_DEDUP:-25}" \
+  --mtlen "${HP_MTLEN:-16569}" --chrom "${HP_MT:-chrM}" --plot-dedup "$DEDUP" $allopt \
   $gopt $popt --out "$ODIR/sv.report.html" \
   || echo "[getSVSummary] WARN: HTML report generation failed" >&2
 

@@ -327,7 +327,8 @@ coverage-dropout gate already biases toward true deletions).
   `fixeklipseVcf.pl` shim into the identical `$O.sv` namespace; (f) un-subsampled SV path for very
   low heteroplasmy.
 - **v3 — event richness & cross-platform:** (a) **DEL-vs-complementary-arc-DUP disambiguation**
-  (MitoSAlt OriH/OriL logic) using the existing `chrMR`; (b) multiple/concurrent deletions + basic
+  (MitoSAlt OriH/OriL logic) using the existing `chrMR` — **design note: [`SV_DELDUP_RESOLUTION.md`](SV_DELDUP_RESOLUTION.md)**;
+  (b) multiple/concurrent deletions + basic
   junction phasing; (c) inversions/insertions where `SA` orientation supports them; (d) optional
   **long-read engine** (`HP_SV=sniffles` over NGMLR/minimap2) for complex/duplicated
   rearrangements; (e) annotate against **MITOMAP/MitoBreak** for known-vs-novel flagging. Each is a

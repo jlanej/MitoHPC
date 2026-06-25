@@ -630,8 +630,18 @@ def call(args):
         if (near(bp5, rep[0], rep[1], args.pad) or near(bp3, rep[2], rep[3], args.pad)
                 or near(bp5, rep[2], rep[3], args.pad) or near(bp3, rep[0], rep[1], args.pad)):
             flags.append("REPEAT")
+        # WRAP = the deletion is at/near the artificial origin OR is the inverted complementary arc of
+        # an origin-crossing deletion. The latter case: an origin-crossing deletion of a SMALL arc is
+        # linearized as its near-genome-length COMPLEMENT (svlen > MTLEN/2). Coverage disambiguates —
+        # the reported (majority) span is the RETAINED arc, so it shows FULL depth (no dosage drop); a
+        # real majority-arc deletion would instead show a drop. No drop => the real, smaller deleted arc
+        # crosses the origin (del-vs-complementary-arc, docs/SV_METHODS §8). Flagging it WRAP only
+        # relabels an ALREADY-non-PASS call (the BIGDEL j_pass block + no_cvg_drop reject it regardless)
+        # and blanks its SVCONF — making the origin artifact explicit instead of a bare 16 kb deletion.
+        no_drop = (not dose) or (ratio > args.drop)
         wrapf = (bp5 <= args.originpad or bp5 >= m - args.originpad
-                 or bp3 <= args.originpad or bp3 >= m - args.originpad)
+                 or bp3 <= args.originpad or bp3 >= m - args.originpad
+                 or (svlen > m // 2 and no_drop))
         if wrapf:
             flags.append("WRAP")
         in_hp = in_iv(hp, bp5) or in_iv(hp, bp3)

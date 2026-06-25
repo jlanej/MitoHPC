@@ -194,6 +194,9 @@ When implementing, honor these rules (they operationalize §0):
   algorithm primitives, and the phased implementation plan for MitoHPC).
 - Method as implemented (keep in sync with the code): **`docs/SV_METHODS.md`** — intuitive but
   precise description of `callsv.py`/`callSV.sh`, formulas, schema, parameters.
+- Deferred-feature design note: **`docs/SV_DELDUP_RESOLUTION.md`** — plan to resolve the circular
+  DEL-vs-complementary-arc-DUP ambiguity via MitoSAlt-style origin (OriH/OriL) preservation, turning
+  today's `WRAP`-withheld origin-crossing junctions into opt-in DEL/DUP calls. NOT implemented.
 - Existing pipeline outputs/legend: `README.md` (the `## OUTPUT ##` section is the list of frozen
   deliverables).
 - Test fixtures: `examples1/`, `examples2/`.
@@ -238,7 +241,18 @@ When implementing, honor these rules (they operationalize §0):
   gallery** — a table whose rows reveal the base64-embedded samplot PNG on click (still single-file/offline).
   The gallery is **subsampled to one representative call per breakpoint cluster** (`--plot-dedup` bp,
   default 25 = the recurrence-table rounding; highest-heteroplasmy call kept, `samples` column shows the
-  cluster size), and the report spells this out; only representative PNGs are embedded.
+  cluster size), and the report spells this out; only representative PNGs are embedded. Each gallery row
+  carries a **status** column (PASS green / non-PASS amber, via theme-aware `--ok`/`--warn` CSS vars) read
+  from the manifest's appended `filter`/`flags` (png stays column 7 for back-compat); the caption shows the
+  flags. The gallery prose is JS-built from `meta` so it stays accurate in both modes.
+- **`HP_SV_PLOT_ALL=1` — "show everything" mode** (rarely used; ON for the committed example so it
+  visualizes ALL samples). It flips `svplot.sh`'s filter DEFAULTS to permissive (plot EVERY call: no
+  PASS / heteroplasmy / `HP`/`DLOOP`/`NUMT` filtering — an explicit `HP_SV_PLOT_PASS`/`MINAF`/`SKIP`
+  still overrides) AND makes `getSVSummary.sh` default `--plot-dedup` to 0 (no representative collapsing)
+  and pass `--plot-all` (report wording). Non-PASS / `WRAP` calls are then shown — the status column and
+  the §2 origin caveat matter here: a `WRAP`/origin-crossing call renders MISLEADINGLY under samplot's
+  linear view (e.g. a genome-spanning "duplication"), so its amber non-PASS status is the disambiguator.
+  Forwarded by `mitohpc-batch-container.sh`.
 - Output is general VCF/SV best practice (NOT this repo's other VCFs): `##contig`/`##reference`/
   provenance headers, sample-named genotype column, `HOMLEN`/`HOMSEQ`/`DELCLASS`/`CIPOS`/`CIEND`,
   `SVCLAIM`, `COMMON`, `GENE`/`NGENE`, `HGVS`, `FORMAT GT:DP:AD:AF:SR`; VCF 4.2 (negative `SVLEN`).

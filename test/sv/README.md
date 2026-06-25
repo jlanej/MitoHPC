@@ -19,6 +19,9 @@ Self-contained, real-time evaluation of the MitoHPC structural-variant caller
 
 ## Samples (10) + robustness checks
 
+> **[`TEST_BAMS.md`](TEST_BAMS.md) details every BAM** — what each one is, *why* that scenario exists
+> (the caller behavior it pins down), and what the harness asserts. The table below is the summary.
+
 | Sample | Construction | Checks |
 |---|---|---|
 | `sv_del4977_h30` / `_h05` | common deletion @30% / @5% | PASS + `REPEAT`/`COMMON`/`HOMLEN=13`/`DELCLASS=I`/genes; 5% → `no_cvg_drop` tier |

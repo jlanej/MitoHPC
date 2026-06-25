@@ -23,7 +23,11 @@ SAMPLE=sv_del4977_h30          # representative per-sample example (canonical co
 # Include the samplot gallery in the example report so it demonstrates the visualization. Needs
 # samplot on PATH; svplot.sh degrades gracefully (no gallery) if it is absent. The PNGs are embedded
 # as base64 in the committed sv.report.html (portable); the per-sample .png/manifest are NOT committed.
+# HP_SV_PLOT_ALL=1 makes the example the "show everything" gallery: a plot for EVERY call across ALL
+# mock samples, with no PASS/heteroplasmy/artifact filtering and no subsampling (so the example also
+# demonstrates the all-plots mode end to end).
 export HP_SV_PLOT=${HP_SV_PLOT:-1}
+export HP_SV_PLOT_ALL=${HP_SV_PLOT_ALL:-1}
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/out" "$EX"; : > "$tmp/in.txt"
