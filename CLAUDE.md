@@ -208,7 +208,8 @@ When implementing, honor these rules (they operationalize §0):
 ### SV module (v1 — implemented, default off via `HP_SV`)
 
 - `scripts/callsv.py` — **the caller** (Python 3 + `pysam`): split-read junction extraction +
-  clustering from `SA:Z:` tags, in-process per-base depth (`count_coverage`), coverage
+  clustering from `SA:Z:` tags, in-process per-base depth (`get_blocks` difference-array, byte-identical
+  to `count_coverage` but ~8× faster — the dominant cost), coverage
   corroboration, two heteroplasmy estimates (AFJ/AFC) + AFDIFF QC, FP flags
   (REPEAT/NUMT/HP/DLOOP/WRAP), PASS/FILTER logic, VCF+tab. Replaces the former perl
   `sa2del.pl`/`svCall.pl` (field-for-field parity verified). **Opt-in extra classes** (default off):

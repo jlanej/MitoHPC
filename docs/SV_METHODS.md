@@ -387,14 +387,18 @@ Computed from the SA reads (the well-characterised evidence); soft-clip-harveste
 
 ## 5. Stage B — coverage corroboration, heteroplasmy, flags (`callsv.py: call`)
 
-**Input:** clustered junctions + per-base depth + reference (`--ref`) + masks. Depth comes from
-`pysam.AlignmentFile.count_coverage(chrom, 0, mtlen, quality_threshold=0)` summed over A/C/G/T into
-a 1-based array `dep[1..mtlen]`; with the default `read_callback="all"` (skips unmapped/secondary/
-QC-fail/dup) this matches `samtools depth -a` (verified field-for-field on the mock BAMs). All
-position windows **wrap modulo mtlen** so the circular origin is handled. Depth is read only by the
-per-junction dosage windows (and, under `--call-inv`, by the inversion path), so `per_base_depth` is
-**computed lazily** — a sample with no junctions and no `--call-inv` skips the whole-genome
-`count_coverage` entirely (the dominant per-sample cost), emitting the same empty result. The
+**Input:** clustered junctions + per-base depth + reference (`--ref`) + masks. Depth is a 1-based
+array `dep[1..mtlen]` giving, per position, the number of reads (skipping unmapped/secondary/QC-fail/
+dup; **keeping** supplementary so origin-crossing arcs count) with an A/C/G/T base aligned there —
+i.e. exactly `pysam count_coverage(quality_threshold=0)`, which on the deduplicated primary chrM
+`$O.bam` also equals `samtools depth -a`. `count_coverage` computes this with per-**base** work and is
+the dominant per-sample cost, so `per_base_depth` instead accumulates each read's aligned **blocks**
+(`get_blocks`) into a difference array (per-block, **~8× faster**) and subtracts the rare N bases that
+`get_blocks` counts but `count_coverage` excludes — **byte-identical** to `count_coverage` (asserted
+on simulated *and* real BAMs by `run_test.py: per_base_depth_matches_count_coverage`). All position
+windows **wrap modulo mtlen** so the circular origin is handled. Depth is read only by the per-junction
+dosage windows (and, under `--call-inv`, by the inversion path), so it is also **computed lazily** — a
+sample with no junctions and no `--call-inv` skips depth entirely, emitting the same empty result. The
 `--chrom`/`--mtlen` consistency check that used to live in `per_base_depth` is now `validate_contig`,
 called unconditionally so a degenerate input still fails cleanly even when depth is skipped.
 

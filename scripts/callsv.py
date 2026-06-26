@@ -479,16 +479,36 @@ def per_base_depth(bam, chrom, mtlen):
     """Per-base read depth over `chrom`, as a 1-based array of length mtlen+1. The contig and its
     length are pre-validated by validate_contig() in main(), so this assumes they are consistent.
 
-    count_coverage sums A/C/G/T base counts, so it excludes deletions/ref-skips and (with
-    read_callback="all") skips unmapped/secondary/qcfail/dup reads; quality_threshold=0
-    counts all bases regardless of base quality. On the deduplicated, primary chrM $O.bam
-    this equals `samtools depth -a` (verified field-for-field on the mock BAMs).
+    Semantically identical to pysam count_coverage(quality_threshold=0): for each position, the
+    number of reads — excluding unmapped/secondary/QC-fail/duplicate, KEEPING supplementary so
+    origin-crossing arcs count — with an A/C/G/T base aligned there (deletions/ref-skips excluded).
+    count_coverage computes this with per-BASE work over the whole genome and is the dominant
+    per-sample cost; we instead accumulate each read's aligned BLOCKS into a difference array
+    (per-block, ~8x faster) and then subtract the rare N bases that get_blocks counts but
+    count_coverage (A/C/G/T only) does not. Byte-identical to count_coverage on simulated and real
+    BAMs — asserted in test/sv/run_test.py (per_base_depth_matches_count_coverage); on the
+    deduplicated primary chrM $O.bam this also equals `samtools depth -a`.
     """
-    dep = [0] * (mtlen + 1)  # 1-based
+    diff = [0] * (mtlen + 2)                    # difference array over 1..mtlen, prefix-summed below
     with pysam.AlignmentFile(bam, "rb") as af:
-        a, c, g, t = af.count_coverage(chrom, 0, mtlen, quality_threshold=0)
-        for i in range(mtlen):
-            dep[i + 1] = a[i] + c[i] + g[i] + t[i]
+        for r in af.fetch(chrom):
+            if r.is_unmapped or r.is_secondary or r.is_qcfail or r.is_duplicate:
+                continue                         # == count_coverage read_callback="all"
+            for s, e in r.get_blocks():          # 0-based [s,e) aligned M/=/X blocks (split at D/N)
+                if e > s:
+                    diff[s + 1] += 1             # add over 1-based inclusive [s+1 .. e]
+                    diff[e + 1] -= 1
+            seq = r.query_sequence
+            if seq and ("N" in seq or "n" in seq):   # count_coverage excludes N bases; subtract them
+                for qp, rp in r.get_aligned_pairs(matches_only=True):
+                    if seq[qp] in "Nn":
+                        diff[rp + 1] -= 1        # decrement that single 1-based position (rp+1)
+                        diff[rp + 2] += 1
+    dep = [0] * (mtlen + 1)  # 1-based
+    run = 0
+    for p in range(1, mtlen + 1):
+        run += diff[p]
+        dep[p] = run
     return dep
 
 

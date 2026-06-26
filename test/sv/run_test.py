@@ -584,6 +584,36 @@ def check_recall(outdir):
         record("recall_fidelity", False, "no persisted BAM to re-call")
 
 
+def check_depth_identity(outdir):
+    """The per_base_depth fast path (get_blocks + N-base correction) must stay BYTE-IDENTICAL to the
+    pysam count_coverage(quality_threshold=0) it replaced — on simulated mocks (no N) AND on a real
+    BAM (N bases exercise the correction). Imports callsv directly and compares the two depth arrays."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("callsv", os.path.join(SDIR, "callsv.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    import pysam
+
+    def ref_count_coverage(bam, chrom, m):
+        dep = [0] * (m + 1)
+        with pysam.AlignmentFile(bam, "rb") as af:
+            a, c, g, t = af.count_coverage(chrom, 0, m, quality_threshold=0)
+            for i in range(m):
+                dep[i + 1] = a[i] + c[i] + g[i] + t[i]
+        return dep
+
+    cands = [os.path.join(BAMS, "sv_del4977_h30.bam")]
+    rb = os.path.join(HERE, "real", "NA12718.chrM.bam")
+    if os.path.isfile(rb):
+        cands.append(rb)                      # real reads exercise the N-base correction
+    for bam in cands:
+        fast = mod.per_base_depth(bam, "chrM", 16569)
+        ref = ref_count_coverage(bam, "chrM", 16569)
+        ndiff = sum(1 for p in range(1, 16570) if fast[p] != ref[p])
+        record("depth_identity:" + os.path.basename(bam), ndiff == 0,
+               "per_base_depth == count_coverage (%d/16569 differ)" % ndiff)
+
+
 def main():
     samples = load_truth()
     outdir = tempfile.mkdtemp()
@@ -598,6 +628,7 @@ def main():
         check_real(outdir)
         check_plots(outdir)
         check_dup_inv(outdir)
+        check_depth_identity(outdir)
         check_recall(outdir)
     finally:
         shutil.rmtree(outdir, ignore_errors=True)
