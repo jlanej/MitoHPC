@@ -103,6 +103,8 @@ def load_calls(path):
                 "ngene": int(r.get("ngene", 0) or 0),
                 "genes": r.get("gene_list", ".") if r.get("gene_list", ".") != "." else "",
                 "flags": r.get("flags", ".") if r.get("flags", ".") != "." else "",
+                # cohort-only MitoBreak annotation (added by getSVSummary.sh); "" when absent/no match
+                "mb": r.get("mitobreak", ".") if r.get("mitobreak", ".") != "." else "",
             })
         except (KeyError, ValueError):
             continue
@@ -267,7 +269,8 @@ details{margin:8px 0}summary{cursor:pointer;color:var(--accent);font-size:14px}
 <div class="panel">
   <div class="controls">
     <div class="ctl"><label for="fpass" class="chk"><input type="checkbox" id="fpass" checked> PASS calls only</label>
-      <label for="fcommon" class="chk"><input type="checkbox" id="fcommon"> common deletion (del4977) only</label></div>
+      <label for="fcommon" class="chk"><input type="checkbox" id="fcommon"> common deletion (del4977) only</label>
+      <label for="fmb" class="chk" title="Show only calls whose breakpoints were previously reported in the MitoBreak database (within HP_SV_MITOBREAK_TOL bp)."><input type="checkbox" id="fmb"> MitoBreak-reported only</label></div>
     <div class="ctl"><div class="row"><span>min heteroplasmy (VAF)</span></div>
       <div class="row"><input type="range" id="fvaf" min="0" max="1" step="0.01" value="0"><span class="mono" id="fvafv" style="min-width:34px">0%</span></div></div>
     <div class="ctl"><span>class</span><div class="row" id="fcls"></div></div>
@@ -297,7 +300,7 @@ details{margin:8px 0}summary{cursor:pointer;color:var(--accent);font-size:14px}
 
 <h2>recurrent deletions</h2>
 <p class="sub">Distinct deletion sites (breakpoints rounded to 25 bp), ranked by the number of samples carrying them.</p>
-<table id="rec"><thead><tr><th>breakpoints (m.)</th><th class="n">size (bp)</th><th class="n">samples</th><th class="n">cohort %</th><th class="n">median VAF</th><th>genes</th><th>tags</th></tr></thead><tbody></tbody></table>
+<table id="rec"><thead><tr><th>breakpoints (m.)</th><th class="n">size (bp)</th><th class="n">samples</th><th class="n">cohort %</th><th class="n">median VAF</th><th>genes</th><th title="Closest previously-reported MitoBreak breakpoint id within tolerance">MitoBreak</th><th>tags</th></tr></thead><tbody></tbody></table>
 
 <style>
 #plotsection .plotwrap{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap;margin-top:6px}
@@ -357,8 +360,8 @@ function hex(c){return[parseInt(c.slice(1,3),16),parseInt(c.slice(3,5),16),parse
 function lerp(a,b,t){const x=hex(a),y=hex(b);return'#'+[0,1,2].map(i=>Math.round(x[i]+(y[i]-x[i])*t).toString(16).padStart(2,'0')).join('')}
 
 // ---- filter state ----
-const st={pass:true,common:false,vaf:0,cls:{I:true,II:true,III:true,'':true},smp:'',jsup:{HIGH:true,MOD:true,LOW:true,'':true},minjr:0};
-function filtered(){return ALL.filter(c=>(!st.pass||c.pass)&&(!st.common||c.common)&&c.vaf>=st.vaf&&(st.cls[c.cls]!==false)&&(st.jsup[c.jsup]!==false)&&(c.jr>=st.minjr)&&(!st.smp||c.smp.toLowerCase().includes(st.smp)))}
+const st={pass:true,common:false,mb:false,vaf:0,cls:{I:true,II:true,III:true,'':true},smp:'',jsup:{HIGH:true,MOD:true,LOW:true,'':true},minjr:0};
+function filtered(){return ALL.filter(c=>(!st.pass||c.pass)&&(!st.common||c.common)&&(!st.mb||c.mb)&&c.vaf>=st.vaf&&(st.cls[c.cls]!==false)&&(st.jsup[c.jsup]!==false)&&(c.jr>=st.minjr)&&(!st.smp||c.smp.toLowerCase().includes(st.smp)))}
 
 // ---- summary cards ----
 function cards(cs){
@@ -454,13 +457,13 @@ function hist(id,vals,bins,fmt,acc){const W=540,H=150,ML=38,MB=26,iw=W-ML-12,ih=
 
 // ---- recurrence ----
 function recurrence(cs){const m=new Map();cs.forEach(c=>{const k=Math.round(c.bp5/25)*25+'_'+Math.round(c.end/25)*25;
-  if(!m.has(k))m.set(k,{bp5:c.bp5,end:c.end,len:c.len,smp:new Set(),vaf:[],genes:c.genes,common:c.common});
-  const g=m.get(k);g.smp.add(c.smp);g.vaf.push(c.vaf);if(c.common)g.common=true});
+  if(!m.has(k))m.set(k,{bp5:c.bp5,end:c.end,len:c.len,smp:new Set(),vaf:[],genes:c.genes,common:c.common,mb:c.mb||''});
+  const g=m.get(k);g.smp.add(c.smp);g.vaf.push(c.vaf);if(c.common)g.common=true;if(c.mb&&!g.mb)g.mb=c.mb});
   return[...m.values()].map(g=>{g.vaf.sort((a,b)=>a-b);g.n=g.smp.size;g.med=g.vaf[g.vaf.length>>1];return g}).sort((a,b)=>b.n-a.n||b.med-a.med)}
 function recTable(cs){const rows=recurrence(cs).slice(0,12).map(g=>{
   const tags=(g.common?'<span class="pill" style="color:#A32D2D;border-color:#F0997B">del4977</span> ':'');
-  return`<tr><td class="mono">${g.bp5+1}_${g.end}</td><td class="n">${g.len.toLocaleString()}</td><td class="n">${g.n}</td><td class="n">${pct(g.n/NS)}</td><td class="n">${pct(g.med)}</td><td class="muted" style="font-size:12px">${(g.genes||'').split(',').slice(0,4).join(', ')}${(g.genes||'').split(',').length>4?'…':''}</td><td>${tags}</td></tr>`}).join('');
-  document.querySelector('#rec tbody').innerHTML=rows||'<tr><td colspan="7" class="muted">no calls match the current filters</td></tr>'}
+  return`<tr><td class="mono">${g.bp5+1}_${g.end}</td><td class="n">${g.len.toLocaleString()}</td><td class="n">${g.n}</td><td class="n">${pct(g.n/NS)}</td><td class="n">${pct(g.med)}</td><td class="muted" style="font-size:12px">${(g.genes||'').split(',').slice(0,4).join(', ')}${(g.genes||'').split(',').length>4?'…':''}</td><td class="mono" style="font-size:12px">${g.mb||''}</td><td>${tags}</td></tr>`}).join('');
+  document.querySelector('#rec tbody').innerHTML=rows||'<tr><td colspan="8" class="muted">no calls match the current filters</td></tr>'}
 
 function legend(){$('legend').innerHTML=CO.map(c=>`<span><span class="sw" style="background:${CC[c]}"></span>${CL[c]}</span>`).join('')+
   ' <span style="margin-left:10px">VAF <span class="vafbar" style="width:90px;display:inline-block;vertical-align:-1px"></span> 0→100%</span>'}
@@ -500,13 +503,14 @@ function ui(){
   $('fjsup').innerHTML=['HIGH','MOD','LOW'].map(k=>`<label class="chk" title="${k=='HIGH'?'consistent, >=MINJR reads, two-strand':k=='MOD'?'clean junction but low-count / one-strand (credible low-level)':'scattered breakpoint sizes (likely artifact)'}"><input type="checkbox" data-jsup="${k}" checked> ${k}</label>`).join('');
   $('fpass').onchange=e=>{st.pass=e.target.checked;render()};
   $('fcommon').onchange=e=>{st.common=e.target.checked;render()};
+  $('fmb').onchange=e=>{st.mb=e.target.checked;render()};
   $('fvaf').oninput=e=>{st.vaf=+e.target.value;$('fvafv').textContent=pct(st.vaf);render()};
   $('fjr').oninput=e=>{st.minjr=+e.target.value;$('fjrv').textContent=e.target.value;render()};
   $('fsmp').oninput=e=>{st.smp=e.target.value.trim().toLowerCase();render()};
   document.querySelectorAll('[data-cls]').forEach(b=>b.onchange=e=>{st.cls[e.target.dataset.cls]=e.target.checked;render()});
   document.querySelectorAll('[data-jsup]').forEach(b=>b.onchange=e=>{st.jsup[e.target.dataset.jsup]=e.target.checked;render()});
-  $('reset').onclick=()=>{st.pass=true;st.common=false;st.vaf=0;st.smp='';st.cls={I:true,II:true,III:true,'':true};st.jsup={HIGH:true,MOD:true,LOW:true,'':true};st.minjr=0;
-    $('fpass').checked=true;$('fcommon').checked=false;$('fvaf').value=0;$('fvafv').textContent='0%';$('fsmp').value='';$('fjr').value=0;$('fjrv').textContent='0';
+  $('reset').onclick=()=>{st.pass=true;st.common=false;st.mb=false;st.vaf=0;st.smp='';st.cls={I:true,II:true,III:true,'':true};st.jsup={HIGH:true,MOD:true,LOW:true,'':true};st.minjr=0;
+    $('fpass').checked=true;$('fcommon').checked=false;$('fmb').checked=false;$('fvaf').value=0;$('fvafv').textContent='0%';$('fsmp').value='';$('fjr').value=0;$('fjrv').textContent='0';
     document.querySelectorAll('[data-cls]').forEach(b=>b.checked=true);document.querySelectorAll('[data-jsup]').forEach(b=>b.checked=true);render()};
   legend();
   buildPlots();

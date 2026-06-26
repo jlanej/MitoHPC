@@ -236,6 +236,13 @@ With `HP_SV` empty the block is skipped and **no existing deliverable changes** 
 diff in `CLAUDE.md` §0 / the additive wiring). `getSummary.sh` is never edited; cohort SV
 aggregation lives in a separate `getSVSummary.sh`, gated on `HP_SV`.
 
+At consolidation, `getSVSummary.sh` also runs **`svMitoBreak.py`** to flag breakpoints previously
+reported in the **MitoBreak** database (Damas 2014, PMC3965124) — appending a `mitobreak` column to
+the cohort `sv.tab` and a `MITOBREAK` INFO field to the merged + sites VCFs, matched against
+`RefSeq/mitobreak.tsv.gz` within `HP_SV_MITOBREAK_TOL` (default 20) bp. This is **cohort-only and
+additive** (per-sample `$O.sv.*` untouched, so no re-call is needed). Every `sv.tab` column is
+documented in **`docs/SV_TAB_DICTIONARY.md`** (a copy ships next to the table as `$ODIR/sv.tab.dict.tsv`).
+
 ---
 
 ## 3. Pipeline (`callSV.sh` → `callsv.py`)

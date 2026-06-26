@@ -243,7 +243,17 @@ When implementing, honor these rules (they operationalize §0):
   set, so the circularization blind spot never reaches a rendered plot.
 - `scripts/getSVSummary.sh` — cohort aggregator (tidy `$ODIR/sv.tab`, `bcftools merge` matrix
   `$ODIR/sv.merged.vcf.gz` with `NS` recurrence, sites union `$ODIR/sv.sites.vcf.gz`, and the
-  interactive `$ODIR/sv.report.html`); SEPARATE from `getSummary.sh`, gated on `HP_SV`.
+  interactive `$ODIR/sv.report.html`); SEPARATE from `getSummary.sh`, gated on `HP_SV`. It also runs
+  the **MitoBreak previously-reported-breakpoint annotation at consolidation** (COHORT-ONLY, additive):
+  `scripts/svMitoBreak.py` appends a `mitobreak` column to `sv.tab` and a `MITOBREAK` INFO field to
+  the merged + sites VCFs (matched against `RefSeq/mitobreak.tsv.gz` within `HP_SV_MITOBREAK_TOL`
+  [default 20] bp, with the MitoBreak 3′-bp = `end_bp3 + 1` DEL convention reconciled). Per-sample
+  `$O.sv.*` are NEVER touched — so no sample re-run / recall is needed to get these annotations. The
+  resource is normalized from `resources/*.csv` by `scripts/mkMitoBreak.py` (1369 DEL + 44 DUP). A
+  `sv.tab` data dictionary lives in `docs/SV_TAB_DICTIONARY.md` (canonical) + `scripts/sv.tab.dict.tsv`
+  (copied alongside the cohort `sv.tab` as `$ODIR/sv.tab.dict.tsv`). `svReport.py` gains a **MitoBreak**
+  recurrence-table column + a "MitoBreak-reported only" filter. `HP_SV_MITOBREAK_TOL` is forwarded by
+  `mitohpc-batch-container.sh`. MitoBreak: Damas 2014 (PMC3965124), http://mitobreak.portugene.com.
 - `scripts/svReport.py` — builds a **self-contained, offline, interactive HTML report** (vanilla
   SVG/JS, no deps) from `sv.tab` + `genes.bed.gz`: circular mtDNA map + linear genome browser with
   gene/OXPHOS-complex annotation, a per-position deletion-frequency track, VAF-coloured calls, live
@@ -285,7 +295,7 @@ When implementing, honor these rules (they operationalize §0):
   (`HP_SV_PLOT` enable + `HP_SV_PLOT_*` filter), so a default batch run also produces the samplot
   gallery; `HP_SV_KEEPBAM`/`HP_SV_RECALL` (re-run speedup) are forwarded too; the bare pipeline is unchanged.
 - Tests/mock data: **`test/sv/`** — `run_test.py` (via `run_test.sh`; current totals are whatever the
-  run prints, ~40 checks, +3 samplot checks when `samplot` is on PATH) covers **21 committed mock BAMs**
+  run prints, ~55 checks, +3 samplot checks when `samplot` is on PATH) covers **21 committed mock BAMs**
   (`test/sv/bams/`, ~31 MB) spanning **deletions** (size range 45 bp→13 kb, repeat/non-repeat,
   multi-deletion, near-homoplasmy, D-loop, low-coverage), **duplications** (tandem small/large),
   **complex** (dup-del, fold-back inv-dup), **inversions** (small/large/near-origin/low-het), and the

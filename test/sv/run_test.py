@@ -351,12 +351,16 @@ def check_examples(outdir):
     record("example_report", valid_report(os.path.join(EX, "sv.report.html")),
            "interactive report present + valid")
 
+    # The committed example sv.tab is the COHORT table, whose header = the per-sample header plus the
+    # cohort-only `mitobreak` column appended by getSVSummary.sh (see SV_TAB_DICTIONARY.md).
     fresh_tab = os.path.join(outdir, "sv_del4977_h30.sv.tab")
     ex_tab = os.path.join(EX, "sv.tab")
-    tok = (os.path.exists(fresh_tab) and os.path.exists(ex_tab)
-           and open(fresh_tab).readline().strip() == open(ex_tab).readline().strip())
+    tok = False
+    if os.path.exists(fresh_tab) and os.path.exists(ex_tab):
+        expected = open(fresh_tab).readline().strip() + "\tmitobreak"
+        tok = open(ex_tab).readline().strip() == expected
     record("example_tab_schema", tok,
-           "columns match" if tok else "DRIFT — run: bash test/sv/make_example.sh")
+           "columns match (+ cohort mitobreak)" if tok else "DRIFT — run: bash test/sv/make_example.sh")
 
     fresh_vcf = os.path.join(outdir, "sv_del4977_h30.sv.vcf")
     ex_vcf = os.path.join(EX, "sv_del4977_h30.sv.vcf")
@@ -584,6 +588,92 @@ def check_recall(outdir):
         record("recall_fidelity", False, "no persisted BAM to re-call")
 
 
+def check_mitobreak(outdir):
+    """Cohort-only MitoBreak known-breakpoint annotation: the matcher (convention + tolerance), the
+    sv.tab column, the merged-VCF MITOBREAK INFO, the data dictionary emitted alongside, the report
+    column+filter, and that PER-SAMPLE outputs stay frozen (no MitoBreak fields). DB =
+    RefSeq/mitobreak.tsv.gz; depends on check_cohort having run getSVSummary.sh into outdir."""
+    db = os.path.join(RDIR, "mitobreak.tsv.gz")
+    if not os.path.exists(db):
+        print("\n[MitoBreak annotation — SKIPPED (RefSeq/mitobreak.tsv.gz absent)]")
+        return
+    print("\n[MitoBreak annotation — cohort-only previously-reported-breakpoint flagging]")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("svMitoBreak", os.path.join(SDIR, "svMitoBreak.py"))
+    mb = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mb)
+    D = mb.load_db(db)
+
+    # (a) matcher on the real DB: the common deletion matches; a clearly novel breakpoint does not
+    common = mb.best_match(D, "DEL", 8482, 13446, 20)
+    novel = mb.best_match(D, "DEL", 3000, 9000, 20)
+    record("mitobreak_match", bool(common) and not novel,
+           "common-del matches (%s); novel breakpoint -> no match" % (common or "-"))
+    # (b) hermetic mini-DB: the +1 (DEL) convention and the exact tolerance boundary
+    mini = {"DEL": [(1000, 2000, "DEL_1000_2000")], "DUP": []}
+    m_in = mb.best_match(mini, "DEL", 1000, 1999, 20)   # bp3 1999+1=2000, bp5 exact -> match
+    m_tol = mb.best_match(mini, "DEL", 1020, 1999, 20)  # bp5 off by 20 (== tol) -> match
+    m_out = mb.best_match(mini, "DEL", 1021, 1999, 20)  # bp5 off by 21 (tol+1) -> NO match
+    record("mitobreak_convention_tol",
+           m_in == "DEL_1000_2000" and m_tol == "DEL_1000_2000" and m_out == "",
+           "+1 bp3 convention + exact per-breakpoint tolerance boundary")
+
+    # cohort-dependent checks below need getSVSummary.sh to have built the cohort sv.tab (bcftools/
+    # bgzip/tabix present — see check_cohort). Skip cleanly otherwise; the matcher tests above stand.
+    if not os.path.exists(os.path.join(outdir, "sv.tab")):
+        print("  (cohort sv.tab not built — skipping cohort annotation checks)")
+        return
+
+    # (c) cohort sv.tab gained the column; del4977 rows annotated, a non-DB deletion is '.'
+    tab = os.path.join(outdir, "sv.tab")
+    hdr, rows = [], []
+    if os.path.exists(tab):
+        L = open(tab).read().splitlines()
+        if L:
+            hdr = L[0].split("\t")
+            rows = [r.split("\t") for r in L[1:] if r]
+    ix = {h: i for i, h in enumerate(hdr)}
+    has_col = bool(hdr) and hdr[-1] == "mitobreak"
+    del4977_ok = has_col and any(r[ix["mitobreak"]] not in ("", ".")
+                                 for r in rows if len(r) > ix["mitobreak"] and r[ix["pos_bp5"]] == "8482")
+    record("mitobreak_tab", has_col and del4977_ok, "sv.tab has mitobreak col; del4977 rows annotated")
+
+    # (d) merged VCF INFO header + a tagged record; sites VCF must INHERIT the field (annotation runs
+    #     before the sites derivation — guard against a future reorder that would silently drop it).
+    merged = os.path.join(outdir, "sv.merged.vcf.gz")
+    sites = os.path.join(outdir, "sv.sites.vcf.gz")
+    hdrok = recok = sitesok = False
+    if shutil.which("bcftools"):
+        if os.path.exists(merged):
+            h = subprocess.run(["bcftools", "view", "-h", merged], capture_output=True, text=True).stdout
+            v = subprocess.run(["bcftools", "view", merged], capture_output=True, text=True).stdout
+            hdrok = "ID=MITOBREAK" in h
+            recok = any("MITOBREAK=" in ln for ln in v.splitlines() if not ln.startswith("#"))
+        if os.path.exists(sites):
+            sh = subprocess.run(["bcftools", "view", "-h", sites], capture_output=True, text=True).stdout
+            sitesok = "ID=MITOBREAK" in sh
+    record("mitobreak_vcf", hdrok and recok and sitesok,
+           "merged VCF has MITOBREAK header+record; sites VCF inherits the field")
+
+    # (e) data dictionary emitted alongside sv.tab, incl. the mitobreak row
+    dictf = os.path.join(outdir, "sv.tab.dict.tsv")
+    record("mitobreak_dict", os.path.exists(dictf) and "mitobreak" in open(dictf).read(),
+           "sv.tab.dict.tsv emitted alongside sv.tab")
+
+    # (f) per-sample outputs FROZEN — no MitoBreak field leaked into a sample's tab/vcf
+    ps_tab = os.path.join(outdir, "sv_del4977_h30.sv.tab")
+    ps_vcf = os.path.join(outdir, "sv_del4977_h30.sv.vcf")
+    frozen = ((not os.path.exists(ps_tab) or "mitobreak" not in open(ps_tab).readline())
+              and (not os.path.exists(ps_vcf) or "MITOBREAK" not in open(ps_vcf).read()))
+    record("mitobreak_persample_frozen", frozen, "per-sample tab/vcf carry no MitoBreak annotation")
+
+    # (g) report has the filter + the column
+    rep = os.path.join(outdir, "sv.report.html")
+    h = open(rep).read() if os.path.exists(rep) else ""
+    record("mitobreak_report", 'id="fmb"' in h and ">MitoBreak<" in h,
+           "report has MitoBreak-reported filter + column")
+
+
 def check_depth_identity(outdir):
     """The per_base_depth fast path (get_blocks + N-base correction) must stay BYTE-IDENTICAL to the
     pysam count_coverage(quality_threshold=0) it replaced — on simulated mocks (no N) AND on a real
@@ -622,6 +712,7 @@ def main():
         for name in sorted(samples):
             check_sample(name, samples[name], outdir)
         check_cohort(outdir, sorted(samples))
+        check_mitobreak(outdir)
         check_examples(outdir)
         check_degenerate(outdir)
         check_vcf_spec(outdir)
