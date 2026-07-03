@@ -34,20 +34,27 @@ docker run --rm -v "$PWD:/data" ghcr.io/jlanej/mitohpc:sv-calling bash -c "
 
 ## Singularity / Apptainer (HPC)
 
-Singularity auto‑mounts the current directory, so no bind mount is needed:
+**Bind your data directory explicitly** with `-B` and use the bound path — robust on any site config:
 
 ```bash
 BAM=your.chrM.bam
 MT=chrM
-singularity exec docker://ghcr.io/jlanej/mitohpc:sv-calling bash -c "
-  samtools index $BAM
+singularity exec -B "$PWD:/data" docker://ghcr.io/jlanej/mitohpc:sv-calling bash -c "
+  samtools index /data/$BAM
   samplot plot \
     -n 'del4977 common deletion (m.8470_13447)  $BAM' \
-    -b $BAM -o del4977.png \
+    -b /data/$BAM -o /data/del4977.png \
     -c $MT -s 8470 -e 13447 -t DEL \
     -A /MitoHPC/RefSeq/genes.bed.gz
 "
 ```
+
+> Stock Singularity/Apptainer *does* bind‑mount the current directory and set it as the working dir by
+> default (`mount cwd = yes`, `--pwd`), so a bare `-b $BAM` with no `-B` often works — but that default
+> is config‑dependent (frequently changed on HPC), is disabled by `--contain`/`-c` or `--no-mount cwd`,
+> and can silently not apply when the data is on a scratch/network filesystem. The explicit `-B` above
+> avoids all of that. (`apptainer` and `singularity` are interchangeable here.) If your data lives
+> elsewhere, bind that path instead, e.g. `-B /scratch/me/run:/data`.
 
 ---
 

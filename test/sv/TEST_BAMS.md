@@ -34,7 +34,7 @@ heteroplasmy `h`:
 - one **event** genome per simulated variant, each contributing fraction `h`. Constructors:
   `make_deletion`, `make_dup` (tandem), `make_delwrap` (origin-crossing), `make_inversion`
   (reverse-**complement** in place → opposite-strand junctions), `make_inv_dup` (fold-back),
-  `make_dispersed_dup`, `make_dupdel` (partial dup-del). The event genome is **doubled** (`eg+eg`)
+  `make_dupdel` (partial dup-del). The event genome is **doubled** (`eg+eg`)
   before sampling so fragments wrap its (shifted) origin, exercising the circular path.
 
 Reads are then aligned back through the pipeline's **circular path** (`gen_bams.sh`: minimap2 →
@@ -54,6 +54,97 @@ aligner-agnostic, confirmed by [`real/aligntest.tsv`](real/aligntest.tsv).)
 **Breakpoint convention** (same in `truth.tsv`, the caller, and the assertions): `bp5` = last
 *retained* base left of the deletion, `bp3` = first *retained* base right of it; the deleted span is
 `bp5+1 … bp3−1` and `SVLEN = bp3 − bp5 − 1`. VCF `POS=bp5`, `END=bp3−1`.
+
+### 1.1 How the reads are simulated and the events created — semi-verbose
+
+Everything is synthesized from the wild-type reference `RefSeq/chrM.fa` (rCRS, 16569 bp) — there are
+**no external reads**. Per sample the simulator does two things: **(a)** build one or more *event
+genomes* by editing the WT sequence in silico, then **(b)** sample paired-end reads from a WT + event
+**mixture** at the target heteroplasmy and write FASTQ.
+
+**(a) Event genomes — string surgery on the 1-based WT sequence** (`event_genome` dispatch):
+
+| kind | constructor | in-silico operation | signal it creates |
+|---|---|---|---|
+| `del` | `make_deletion(bp5,bp3)` | `WT[:bp5] + WT[bp3-1:]` — fuse base `bp5` to base `bp3`, dropping `bp5+1..bp3-1` | same-strand junction **+ coverage drop** |
+| `dup` | `make_dup(a,b)` | `WT[:b] + WT[a-1:b] + WT[b:]` — a 2nd tandem copy of `[a,b]` | everted junction **+ coverage gain** |
+| `delwrap` | `make_delwrap(bp5,bp3)`, `bp5>bp3` | `WT[bp3-1:bp5]` — keep only arc `[bp3,bp5]`; delete the origin-crossing complement | junction whose **deleted arc crosses the origin** |
+| `inv` | `make_inversion(a,b)` | `WT[:a-1] + revcomp(WT[a-1:b]) + WT[b:]` — reverse-**complement** `[a,b]` in place | two **opposite-strand** junctions, **CN-neutral** (no gain) |
+| `invdup` | `make_inv_dup(a,b)` | `WT[:b] + revcomp(WT[a-1:b]) + WT[b:]` — inverted extra copy | opposite-strand junction **+ gain** (INVDUP) |
+| `dupdel` | `make_dupdel(a,b,da,db)` | tandem copy of `[a,b]` whose 2nd copy omits internal `[da,db]` | dup junction **and** an embedded del junction |
+
+**(b) Reads.** Paired-end, FR-oriented, read length `rlen=150` bp (flat Q37), fragment length uniform
+in `[300, 450]`, per-base substitution error `0.1 %` (`-err 0.001`; a random base). **Deterministic** —
+the RNG is seeded per sample (`42 + Σ ord(name)`), so regeneration is bit-identical. Each genome (WT
+**and** each event) is **doubled** (`g+g`) and the fragment start is drawn over the first half, so a
+fragment that runs off the end **wraps the origin** — that is where origin-crossing reads come from.
+
+**Heteroplasmy → read counts.** For a sample at outside-depth `D` and event fraction `h`:
+`n_WT = round(D·(1−Σh)·16569 / rlen)` and, per event, `n_event = round(D·h·len(event) / rlen)`. Because
+the shorter/longer event genome redistributes its reads, **outside** the deletion the event contributes
+fraction `h` of depth and WT `(1−h)`; **inside** only WT contributes → `inside/outside = 1−h` →
+**`AFC = 1−ratio = h`**, and the junction-read fraction **`AFJ ≈ h`**. (Each fragment yields two mates,
+so the realized per-base coverage is ≈ `2·D`; the heteroplasmy *ratio* is unaffected.)
+
+**Alignment (`gen_bams.sh`).** `minimap2 -ax sr` → circularized reference `chrMC.fa`
+(16869 bp = 16569 + the 300 bp origin overlap) → `samtools view -F 0x90C` (keep primary; drop
+unmapped/mate-unmapped/secondary/supplementary) → `circSam.pl` (wraps reads aligned into the 300 bp
+overlap back to `1..16569` **and** emits the `SA`-tagged split alignments for origin-crossing reads) →
+`samtools sort`. The product is identical in *form* to the pipeline's per-sample `$O.bam`. (Production
+aligns with `bwa mem`; minimap2 only mints mock data — the split-read + coverage signal is
+aligner-agnostic.)
+
+### 1.2 Verbose walkthrough — one sample end-to-end (teach-an-agent version)
+
+Follow `sv_del4977_h30` (`del 8469→13447`, `h=0.30`, `depth=300`) from reference to BAM:
+
+1. **Reference.** `WT = RefSeq/chrM.fa` = rCRS, 16569 bp, 1-based.
+2. **Build the deletion genome.** `make_deletion(WT, 8469, 13447)` = `WT[:8469] + WT[13446:]` →
+   `16569 − 4977 = 11592 bp`: bases `1..8469` immediately followed by `13447..16569`. The seam fuses
+   base 8469 to base 13447 — the **deletion junction**. (Those breakpoints sit inside the 13 bp direct
+   repeat `ACCTCCCTCACCA` at 8470–8482 / 13447–13459, so the fusion point is ambiguous *within* the
+   repeat; the caller "slides" and lands near 8482/13446 — still within `BP_TOL`.)
+3. **Circularize it.** `del2 = del + del` (23184 bp) so a fragment can run off the end and wrap the
+   deletion genome's (shifted) origin.
+4. **Choose read counts** (`h=0.30, D=300, rlen=150`):
+   - WT: `round(300·0.70·16569/150) ≈ 23197` fragments.
+   - DEL: `round(300·0.30·11592/150) ≈ 6955` fragments.
+   The shorter DEL genome packs those 6955 fragments to the same **per-base** share as `h`: realized
+   coverage ≈ 420× (WT) + 180× (DEL) = **600× outside** the deletion (≈ `2·D`; the ×2 is the two mates).
+5. **Sample each fragment.** Pick `flen∈[300,450]`, `start∈[0,glen)`, `frag = template[start:start+flen]`;
+   `R1 = frag[:150]`, `R2 = revcomp(frag[-150:])`; add 0.1 % base noise; write to
+   `sv_del4977_h30_1.fq` / `_2.fq`. Three outcomes for DEL fragments:
+   - **entirely on one side** of the seam → aligns normally to WT.
+   - **straddling the seam** → contains `…(ends at ref 8469)(starts at ref 13447)…`, contiguous in the
+     deletion genome but **not** in WT. Aligned to WT its two halves map to ~8469 and ~13447 → a
+     **split read with an `SA` tag** = the junction evidence (`JR`).
+   - **nothing covers 8470..13446** (that span doesn't exist in the deletion genome) → inside the
+     deletion only WT reads land → the **coverage drop** (420× inside vs 600× outside →
+     `AFC = 1 − 420/600 = 0.30`).
+6. **Align → BAM** (`gen_bams.sh`): minimap2 → `chrMC` → `-F 0x90C` → `circSam.pl` → sort →
+   `bams/sv_del4977_h30.bam`.
+7. **What the caller now sees:** an `SA`-junction cluster at ~8482/~13446 (`JR`, with wild-type
+   spanning reads as the `AFJ` denominator → `AFJ≈0.30`) and a ~30 % inside coverage drop
+   (`AFC≈0.30`) → **PASS**, `COMMON=1`, `HOMLEN=13`, `HOMSEQ=ACCTCCCTCACCA`, `DELCLASS=I`.
+8. **Ground truth** to `truth.tsv`: `sv_del4977_h30  del  8469  13447  4977  0.300  300  pass`.
+
+**How the other kinds diverge from this template:**
+- **`dup`** inserts a 2nd tandem copy → an **everted** junction (reference order reverses) **plus a
+  coverage gain** (`CVGR ≈ 1+h`, ≈1.5 at `h=0.5`). The DEL-only caller sees the junction but the gain
+  (`ratio > 1+gainpad`) blocks a deletion PASS.
+- **`inv`** reverse-**complements** the segment in place: the breakpoints become **opposite-strand**
+  junctions and copy number is unchanged (no gain). `extract_junctions` keeps only same-strand `SA`
+  pairs, so this is invisible (`no_record`) until `--call-inv`.
+- **`delwrap`** (`bp5>bp3`) keeps only the arc `[bp3,bp5]`, so the **deleted** arc crosses the origin.
+  The caller computes `SVLEN` linearly, cannot represent that arc, and instead reports the
+  **complementary retained arc** (a full-coverage majority-arc "deletion") with a `WRAP` flag — never a
+  PASS.
+- **`invdup` / `dupdel`** compose the above (opposite-strand + gain; dup junction + embedded del) for
+  the forward-looking complex fixtures.
+
+Inspect any regenerated sample's raw signal directly, e.g.
+`samtools view bams/sv_del4977_h30.bam | grep -c SA:Z:` (junction reads) and
+`samtools depth -a bams/sv_del4977_h30.bam` (the coverage drop).
 
 ### Thresholds the assertions use (`run_test.py`)
 
@@ -75,7 +166,7 @@ A genuine simulated deletion is also required to be a **clean junction**: split-
 
 Quick reference (from `truth.tsv` / `SAMPLES`); `expect` is the **current** caller behavior the suite
 asserts. New event constructors live in `make_testdata.py`: `make_inversion` (revcomp in place),
-`make_inv_dup` (fold-back), `make_dispersed_dup`, `make_dupdel`. A **signature pre-assertion** confirmed
+`make_inv_dup` (fold-back), `make_dupdel`. A **signature pre-assertion** confirmed
 each forward-looking BAM actually carries its signal (opposite-strand `SA` for INV, a coverage gain for
 DUP, off-origin `SA` for wrap) — so a broken simulator fails loudly rather than a test passing for the
 wrong reason.
