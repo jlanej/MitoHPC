@@ -1,0 +1,1135 @@
+#!/usr/bin/env python3
+"""
+MitoHPC mtDNA structural-variant (large deletion) caller.
+
+Single self-contained module (pysam, stdlib only) that replaces the v1 perl cores
+(sa2del.pl + svCall.pl). It reads the circular-aware chrM alignment ($O.bam) in
+process and writes ONLY new files:
+    --out  $O.sv.vcf   (VCFv4.2, SVTYPE=DEL; header from scripts/sv.vcf)
+    --tab  $O.sv.tab   (flat table)
+
+Method (v1): cluster split-read deletion junctions (from SA:Z tags), require a
+corroborating coverage drop for PASS, and report two heteroplasmy estimates
+(junction fraction AFJ + coverage ratio AFC) with an AFDIFF QC field. See
+docs/SV_METHODS.md (kept in sync with this code).
+
+Driven by scripts/callSV.sh; all thresholds come from HP_SV_* env vars there.
+"""
+import argparse
+import datetime
+import gzip
+import hashlib
+import math
+import os
+import sys
+from collections import Counter
+
+import pysam
+
+REF_CONSUMING = frozenset("MDN=X")  # CIGAR ops that advance the reference
+
+# del4977 "common deletion" recognition (rCRS): 13bp direct repeat windows + size band
+COMMON_BP5 = (8470, 8482)
+COMMON_BP3 = (13447, 13459)
+COMMON_SVLEN = (4960, 4990)
+
+# OXPHOS complex membership of each mtDNA protein-coding gene (Complex II is nuclear-encoded -> absent).
+# Used by the biological-impact score to count distinct complexes a deletion disrupts.
+OXPHOS_COMPLEX = {"ND1": "I", "ND2": "I", "ND3": "I", "ND4": "I", "ND4L": "I", "ND5": "I", "ND6": "I",
+                  "CYTB": "III", "COX1": "IV", "COX2": "IV", "COX3": "IV", "ATP6": "V", "ATP8": "V"}
+ORIH = (110, 441)     # origin of heavy-strand replication (within the D-loop); removal => replication-dead
+ORIL = (5721, 5798)   # origin of light-strand replication
+
+
+def wrap1(p, m):
+    """Wrap a 1-based position into 1..m (circular genome)."""
+    return ((p - 1) % m) + 1
+
+
+# --------------------------------------------------------------------------- #
+# helpers
+# --------------------------------------------------------------------------- #
+def ref_len_from_cigar(cigar):
+    """Reference bases consumed by a CIGAR string (M/D/N/=/X)."""
+    n = 0
+    num = ""
+    for ch in cigar:
+        if ch.isdigit():
+            num += ch
+        else:
+            if ch in REF_CONSUMING and num:
+                n += int(num)
+            num = ""
+    return n
+
+
+def mode(values):
+    """Most frequent value; ties broken by the smallest value (matches sa2del.pl)."""
+    c = Counter(values)
+    top = max(c.values())
+    return min(v for v, k in c.items() if k == top)
+
+
+def median(vals):
+    if not vals:
+        return 0
+    s = sorted(vals)
+    n = len(s)
+    if n % 2:
+        return s[n // 2]
+    return (s[n // 2 - 1] + s[n // 2]) / 2
+
+
+def rnd(x):
+    """Round half up for non-negative values (matches perl int(x+0.5))."""
+    return int(x + 0.5)
+
+
+def warn_mask(path, e):
+    """A supplied mask/annotation file could not be read. callSV.sh only passes a path when the
+    file is non-empty, so reaching here means the file became unreadable AFTER that check —
+    truncated or corrupt (gzip.BadGzipFile subclasses OSError). Silently degrading to an empty
+    mask would disable a false-positive control (NUMT/HP/DLOOP) WITHOUT a coverage drop, so an
+    artifact deletion could reach PASS undemoted; warn loudly instead (the call still proceeds
+    so SNV/CN deliverables are unaffected, but the lost control is now visible in the log)."""
+    sys.stderr.write("[callsv] WARNING: could not read %s (%s) — its false-positive control / "
+                     "annotation is DISABLED for this sample\n" % (path, e))
+
+
+def load_bed_gz(path):
+    """BED(.gz) -> list of [start1, end1] 1-based inclusive intervals.
+
+    A None path means the mask was intentionally not supplied (silently empty); a supplied-but-
+    unreadable path warns via warn_mask (see there)."""
+    iv = []
+    if not path:
+        return iv
+    try:
+        with gzip.open(path, "rt") as fh:
+            for line in fh:
+                if line.startswith("#"):
+                    continue
+                f = line.split()
+                if len(f) >= 3 and f[1].isdigit():
+                    iv.append((int(f[1]) + 1, int(f[2])))
+    except OSError as e:
+        warn_mask(path, e)
+    return iv
+
+
+def load_vcf_pos(path):
+    """VCF(.gz) -> set of POS (1-based), any contig."""
+    s = set()
+    if not path:
+        return s
+    try:
+        with gzip.open(path, "rt") as fh:
+            for line in fh:
+                if line.startswith("#"):
+                    continue
+                f = line.split()
+                if len(f) >= 2 and f[1].isdigit():
+                    s.add(int(f[1]))
+    except OSError as e:
+        warn_mask(path, e)
+    return s
+
+
+def in_iv(iv, p):
+    return any(a <= p <= b for a, b in iv)
+
+
+def near(p, a, b, pad):
+    return (a - pad) <= p <= (b + pad)
+
+
+def microhomology(seq, bp5, bp3, mtlen, maxk=40):
+    """Breakpoint microhomology / direct repeat length and sequence.
+
+    Split-read aligners place a deletion junction so its two arms OVERLAP across any
+    repeat shared by the breakpoints: the last k bases of the upstream arm (ending at
+    bp5) equal the first k bases of the downstream arm (starting at bp3). HOMLEN is the
+    largest such k. For the del4977 common deletion this returns (13, 'ACCTCCCTCACCA').
+    Returns (homlen, homseq).
+    """
+    best, bestseq = 0, ""
+    n = len(seq)
+    if n == 0:
+        return 0, ""
+    for k in range(1, maxk + 1):
+        left = "".join(seq[wrap1(bp5 - k + 1 + j, mtlen) - 1] for j in range(k))
+        right = "".join(seq[wrap1(bp3 + j, mtlen) - 1] for j in range(k))
+        if left == right:
+            best, bestseq = k, right
+    return best, bestseq
+
+
+def load_genes(path, chrom):
+    """Load gene/feature intervals from a 6-col BED(.gz) for one contig.
+
+    Returns list of (start1, end1, name) 1-based inclusive (col4 = feature name)."""
+    iv = []
+    if not path or not os.path.exists(path):
+        return iv
+    try:
+        with gzip.open(path, "rt") as fh:
+            for line in fh:
+                if line.startswith("#"):
+                    continue
+                f = line.split()
+                if len(f) >= 4 and f[0] == chrom and f[1].isdigit():
+                    iv.append((int(f[1]) + 1, int(f[2]), f[3]))
+    except OSError as e:
+        warn_mask(path, e)
+    return iv
+
+
+def load_mlc(path):
+    """MLC.vcf.gz -> {pos1: mean MLC_score over that position's ALT rows}.
+
+    The Yale mitochondrial local-constraint score (Lake et al. 2024) is ~per-position but stored
+    per-ALT; averaging the ALT rows gives a reproducible, ALT-independent per-base constraint value
+    (range ~0..6, genome mean ~0.43, low in the D-loop, high in tRNA/rRNA/constrained codons). POS is
+    already 1-based (NO +1, unlike the BED loaders). A few positions have no record and are simply
+    absent -> span aggregation divides by the positions PRESENT, never by span length."""
+    acc = {}
+    if not path:
+        return acc
+    try:
+        with gzip.open(path, "rt") as fh:
+            for line in fh:
+                if line.startswith("#"):
+                    continue
+                f = line.split("\t")
+                if len(f) < 8 or not f[1].isdigit():
+                    continue
+                sc = None
+                for kv in f[7].split(";"):
+                    if kv.startswith("MLC_score="):
+                        try:
+                            sc = float(kv[10:])
+                        except ValueError:
+                            sc = None
+                        break
+                if sc is None:
+                    continue
+                p = int(f[1])
+                s, n = acc.get(p, (0.0, 0))
+                acc[p] = (s + sc, n + 1)
+    except OSError as e:
+        warn_mask(path, e)
+    return {p: s / n for p, (s, n) in acc.items()}
+
+
+def genes_in_deletion(genes, d1, d2):
+    """Features overlapping the (linear, non-wrapped) deleted span [d1, d2].
+
+    Returns a list of 'name:F' (fully deleted) or 'name:P' (partially), feature order."""
+    out = []
+    if d2 < d1:
+        return out
+    for (g1, g2, name) in genes:
+        if g1 <= d2 and g2 >= d1:               # overlap
+            full = g1 >= d1 and g2 <= d2
+            out.append("%s:%s" % (name, "F" if full else "P"))
+    return out
+
+
+def fasta_md5(seq):
+    """MD5 of the uppercase reference sequence (matches the VCF ##contig md5 convention)."""
+    return hashlib.md5(seq.upper().encode()).hexdigest()
+
+
+# --------------------------------------------------------------------------- #
+# Stage A: split-read deletion junctions (replaces sa2del.pl)
+# --------------------------------------------------------------------------- #
+def extract_junctions(bam, chrom, minmapq, minsize, maxsize, pad, minsupport, mtlen, minclip=0, srtol=5):
+    """Return clustered junctions: list of (bp5, bp3, svlen, JR, strand, srcons, srsb).
+
+    SA-tag coordinates may live in the circularized chrMC extension (>mtlen, since circSam.pl
+    does not rewrite SA tags), so they are wrapped into 1..mtlen; clusters whose final
+    breakpoints fall outside 1..mtlen are dropped (keeps VCF POS/END within the contig)."""
+    pts = []  # (up, dn, rid, strand)
+    with pysam.AlignmentFile(bam, "rb") as af:
+        for r in af.fetch(chrom):
+            if r.is_unmapped or r.is_secondary or r.is_supplementary:
+                continue
+            if r.mapping_quality < minmapq:
+                continue
+            if not r.has_tag("SA"):
+                continue
+            strand = "-" if r.is_reverse else "+"
+            abeg = r.reference_start + 1          # 1-based start
+            aend = r.reference_end                # 1-based inclusive end
+            if aend is None:
+                continue
+
+            # first SA segment only (by design, matching the original sa2del.pl): a read
+            # with multiple supplementary alignments contributes just its first junction.
+            sa = r.get_tag("SA").split(";")[0]
+            s = sa.split(",")
+            if len(s) < 4:
+                continue
+            sref, spos, sstrand, scig = s[0], s[1], s[2], s[3]
+            if sref != chrom or sstrand != strand:   # same contig + same strand => DEL
+                continue
+            if not spos.isdigit() or scig == "*" or not scig:   # skip degenerate SA (cf. sa2del.pl)
+                continue
+            sbeg = wrap1(int(spos), mtlen)     # SA coords may be in chrMC extension space (>mtlen)
+            send = sbeg + ref_len_from_cigar(scig) - 1
+
+            if abeg <= sbeg:
+                up, dn = aend, sbeg
+            else:
+                up, dn = send, abeg
+            svlen = dn - up - 1
+            if svlen < minsize or svlen > maxsize:
+                continue
+
+            rid = r.query_name        # dedupe on TEMPLATE (a fragment = one molecule), matching the
+            pts.append((up, dn, rid, strand))     # SR spanning-read unit so AFJ=JR/(JR+SR) is unbiased
+
+    # greedy single-linkage clustering: a point joins the current cluster if within `pad` of its
+    # LAST-ADDED member (transitive linkage), so a breakpoint smear wider than pad across a direct
+    # repeat is not silently fragmented into sub-minsupport pieces (the representative breakpoint is
+    # the mode of all members, recomputed below). (v1 perl sa2del.pl anchored to the fixed seed.)
+    pts.sort(key=lambda x: (x[0], x[1]))
+    clusters = []
+    for p in pts:
+        if (clusters and abs(p[0] - clusters[-1]["pts"][-1][0]) <= pad
+                and abs(p[1] - clusters[-1]["pts"][-1][1]) <= pad):
+            clusters[-1]["pts"].append(p)
+        else:
+            clusters.append({"pts": [p]})
+
+    candidates = []   # [bp5, bp3, svlen, strand, tids, srcons, srsb]
+    for c in clusters:
+        cpts = c["pts"]                                     # this cluster's junction points
+        tids = {p[2] for p in cpts}
+        if len(tids) < minsupport:
+            continue
+        bp5 = mode([p[0] for p in cpts])
+        bp3 = mode([p[1] for p in cpts])
+        strand = mode([p[3] for p in cpts])
+        if not (1 <= bp5 <= mtlen and 1 <= bp3 <= mtlen):   # keep VCF POS/END within the contig
+            continue
+        svlen = bp3 - bp5 - 1
+        if svlen < minsize or svlen > maxsize:
+            continue
+        # split-read evidence quality (independent of read depth):
+        #   srcons = breakpoint CONSISTENCY, measured on the per-read deletion SIZE (svlen), not the
+        #     absolute breakpoint — a direct repeat slides bp5/bp3 together but CONSERVES svlen, so a
+        #     clean del4977 scores ~1.0 despite the 13bp microhomology spread, while reads pointing at
+        #     scattered sizes (mapping noise) score low. This is what makes a tight 4-5 read cluster
+        #     credible vs a same-count smear of artifacts.
+        #   srsb   = strand balance min(+,-)/total (0 = one-strand-only, a classic artifact signature).
+        sizes = [p[1] - p[0] - 1 for p in cpts]
+        msize = mode(sizes)
+        srcons = sum(1 for v in sizes if abs(v - msize) <= srtol) / len(sizes)
+        nf = sum(1 for p in cpts if p[3] == "+")
+        srsb = min(nf, len(cpts) - nf) / len(cpts)
+        candidates.append([bp5, bp3, svlen, strand, set(tids), srcons, srsb])
+
+    # Soft-clip harvesting (REINFORCE-ONLY): a deletion read whose clipped arm is too short for the
+    # aligner to emit an SA tag still soft-clips AT the breakpoint (empirically ~10-15% of
+    # breakpoint-clipped reads, clips ≤16 bp). Add such reads to an EXISTING SA-supported junction's
+    # support, matched by clip position within `pad` — this recovers the JR/AFJ those reads carry
+    # (raising low-heteroplasmy sensitivity) while NEVER creating a junction not already evidenced by
+    # ≥minsupport split reads, so it cannot fabricate calls. A trailing soft-clip ending near bp5, or
+    # a leading soft-clip starting near bp3, marks a read crossing that deletion junction.
+    if candidates and minclip > 0:
+        with pysam.AlignmentFile(bam, "rb") as af:
+            for r in af.fetch(chrom):
+                if r.is_unmapped or r.is_secondary or r.is_supplementary:
+                    continue
+                if r.mapping_quality < minmapq:
+                    continue
+                cig = r.cigartuples
+                if not cig:
+                    continue
+                tid = r.query_name
+                if cig[0][0] in (4, 5) and cig[0][1] >= minclip:            # leading clip -> bp3 side
+                    p = wrap1(r.reference_start + 1, mtlen)
+                    for cand in candidates:
+                        if abs(p - cand[1]) <= pad:
+                            cand[4].add(tid)
+                end = r.reference_end
+                if end and cig[-1][0] in (4, 5) and cig[-1][1] >= minclip:  # trailing clip -> bp5 side
+                    p = wrap1(end, mtlen)
+                    for cand in candidates:
+                        if abs(p - cand[0]) <= pad:
+                            cand[4].add(tid)
+
+    return [(bp5, bp3, svlen, len(tids), strand, srcons, srsb)
+            for (bp5, bp3, svlen, strand, tids, srcons, srsb) in candidates]
+
+
+# --------------------------------------------------------------------------- #
+# Stage A' (opt-in): inversion junctions = OPPOSITE-strand split reads
+# --------------------------------------------------------------------------- #
+def extract_inversions(bam, chrom, minmapq, minsize, maxsize, pad, minsupport, mtlen, srtol=5):
+    """Return clustered INVERSION candidates: (bp5, bp3, svlen, JR, srcons, srsb). An inversion
+    breakpoint joins a forward arm to a reverse-COMPLEMENTED arm, so the SA segment maps to the
+    OPPOSITE strand (`sstrand != strand`) — exactly what `extract_junctions` discards. The two arms'
+    inner edges bracket the inverted span [bp5, bp3]; both reciprocal junctions (left a-1|a and right
+    b|b+1) cluster to ~(a, b). CN-neutral, so there is no dosage corroboration — scoring is junction-
+    only (docs/SV_EVENT_TYPES.md §3.3)."""
+    pts = []   # (lo, hi, rid, strand)
+    with pysam.AlignmentFile(bam, "rb") as af:
+        for r in af.fetch(chrom):
+            if r.is_unmapped or r.is_secondary or r.is_supplementary:
+                continue
+            if r.mapping_quality < minmapq:
+                continue
+            if not r.has_tag("SA"):
+                continue
+            strand = "-" if r.is_reverse else "+"
+            abeg = r.reference_start + 1
+            aend = r.reference_end
+            if aend is None:
+                continue
+            sa = r.get_tag("SA").split(";")[0].split(",")
+            if len(sa) < 5:
+                continue
+            sref, spos, sstrand, scig, smapq = sa[0], sa[1], sa[2], sa[3], sa[4]
+            if sref != chrom or sstrand == strand:        # OPPOSITE strand => inversion (vs DEL/DUP)
+                continue
+            # MAPQ floor on the SA segment too (not just the primary): opposite-strand chimeras from
+            # NUMTs / palindromes are the dominant inversion false-positive, and INV has no coverage
+            # backstop — so require BOTH arms well-mapped (docs/SV_EVENT_TYPES.md §6).
+            if not smapq.isdigit() or int(smapq) < minmapq:
+                continue
+            if not spos.isdigit() or scig == "*" or not scig:
+                continue
+            sbeg = wrap1(int(spos), mtlen)
+            send = sbeg + ref_len_from_cigar(scig) - 1
+            # ANCHOR on the primary's clip-side aligned edge (precise: every read crossing the same
+            # breakpoint clips at the same base), and pair it with the SA arm's FAR edge (the inversion
+            # links two DISTANT points). This is invariant to which arm is primary/SA, so the two
+            # reciprocal junctions of one inversion cluster together instead of fragmenting.
+            cig = r.cigartuples
+            if not cig:
+                continue
+            lead = cig[0][1] if cig[0][0] in (4, 5) else 0
+            trail = cig[-1][1] if cig[-1][0] in (4, 5) else 0
+            bp1 = aend if trail >= lead else abeg
+            bp2 = send if abs(send - bp1) >= abs(sbeg - bp1) else sbeg
+            lo, hi = (bp1, bp2) if bp1 <= bp2 else (bp2, bp1)
+            if not (1 <= lo <= mtlen and 1 <= hi <= mtlen):
+                continue
+            if (hi - lo) < minsize or (hi - lo) > maxsize:
+                continue
+            pts.append((lo, hi, r.query_name, strand))
+
+    pts.sort(key=lambda x: (x[0], x[1]))
+    clusters = []
+    for p in pts:
+        if (clusters and abs(p[0] - clusters[-1]["pts"][-1][0]) <= pad
+                and abs(p[1] - clusters[-1]["pts"][-1][1]) <= pad):
+            clusters[-1]["pts"].append(p)
+        else:
+            clusters.append({"pts": [p]})
+
+    out = []
+    for c in clusters:
+        cpts = c["pts"]
+        tids = {p[2] for p in cpts}
+        if len(tids) < minsupport:
+            continue
+        bp5 = mode([p[0] for p in cpts])
+        bp3 = mode([p[1] for p in cpts])
+        if not (1 <= bp5 <= mtlen and 1 <= bp3 <= mtlen) or bp3 <= bp5:
+            continue
+        svlen = bp3 - bp5
+        if svlen < minsize or svlen > maxsize:
+            continue
+        sizes = [p[1] - p[0] for p in cpts]
+        msize = mode(sizes)
+        srcons = sum(1 for v in sizes if abs(v - msize) <= srtol) / len(sizes)
+        nf = sum(1 for p in cpts if p[3] == "+")
+        srsb = min(nf, len(cpts) - nf) / len(cpts)
+        out.append((bp5, bp3, svlen, len(tids), srcons, srsb))
+
+    # one inversion has two reciprocal junctions (its left and right breakpoints) that can land in
+    # separate clusters; merge candidates that substantially overlap into the single best-supported one.
+    out.sort(key=lambda c: c[3], reverse=True)               # by JR desc
+    merged = []
+    for c in out:
+        if not any(min(c[1], k[1]) - max(c[0], k[0]) > 0.5 * min(c[2], k[2]) for k in merged):
+            merged.append(c)
+    return sorted(merged, key=lambda c: c[0])
+
+
+# --------------------------------------------------------------------------- #
+# per-base read depth (pysam count_coverage)
+# --------------------------------------------------------------------------- #
+def validate_contig(bam, chrom, mtlen):
+    """Confirm `chrom` exists in `bam` and its reference length == mtlen (origin-coordinate safety).
+    Raises ValueError on either mismatch. Called UNCONDITIONALLY from main() so a bad --chrom/--mtlen
+    still fails cleanly on samples where per_base_depth is later skipped (no junctions, no --call-inv)."""
+    with pysam.AlignmentFile(bam, "rb") as af:
+        if chrom not in af.references:
+            raise ValueError("contig %r not found in %s" % (chrom, bam))
+        reflen = af.get_reference_length(chrom)
+        if reflen != mtlen:
+            raise ValueError("--mtlen %d != %s length %d in %s" % (mtlen, chrom, reflen, bam))
+
+
+def per_base_depth(bam, chrom, mtlen):
+    """Per-base read depth over `chrom`, as a 1-based array of length mtlen+1. The contig and its
+    length are pre-validated by validate_contig() in main(), so this assumes they are consistent.
+
+    Semantically identical to pysam count_coverage(quality_threshold=0): for each position, the
+    number of reads — excluding unmapped/secondary/QC-fail/duplicate, KEEPING supplementary so
+    origin-crossing arcs count — with an A/C/G/T base aligned there (deletions/ref-skips excluded).
+    count_coverage computes this with per-BASE work over the whole genome and is the dominant
+    per-sample cost; we instead accumulate each read's aligned BLOCKS into a difference array
+    (per-block, ~8x faster) and then subtract the rare N bases that get_blocks counts but
+    count_coverage (A/C/G/T only) does not. Byte-identical to count_coverage on simulated and real
+    BAMs — asserted in test/sv/run_test.py (per_base_depth_matches_count_coverage); on the
+    deduplicated primary chrM $O.bam this also equals `samtools depth -a`.
+    """
+    diff = [0] * (mtlen + 2)                    # difference array over 1..mtlen, prefix-summed below
+    with pysam.AlignmentFile(bam, "rb") as af:
+        for r in af.fetch(chrom):
+            if r.is_unmapped or r.is_secondary or r.is_qcfail or r.is_duplicate:
+                continue                         # == count_coverage read_callback="all"
+            for s, e in r.get_blocks():          # 0-based [s,e) aligned M/=/X blocks (split at D/N)
+                if e > s:
+                    diff[s + 1] += 1             # add over 1-based inclusive [s+1 .. e]
+                    diff[e + 1] -= 1
+            seq = r.query_sequence
+            if seq and ("N" in seq or "n" in seq):   # count_coverage excludes N bases; subtract them
+                for qp, rp in r.get_aligned_pairs(matches_only=True):
+                    if seq[qp] in "Nn":
+                        diff[rp + 1] -= 1        # decrement that single 1-based position (rp+1)
+                        diff[rp + 2] += 1
+    dep = [0] * (mtlen + 1)  # 1-based
+    run = 0
+    for p in range(1, mtlen + 1):
+        run += diff[p]
+        dep[p] = run
+    return dep
+
+
+def trimmed_median(vals, trim=0.15):
+    """Median after dropping `trim` of each tail — robust to NUMT/homopolymer depth spikes."""
+    if not vals:
+        return 0
+    s = sorted(vals)
+    k = int(trim * len(s))
+    s2 = s[k:len(s) - k]
+    return median(s2 if s2 else s)
+
+
+def masked_depths(dep, a, b, m, masked):
+    """Per-base depths over the circular range [a..b] (1-based inclusive), skipping positions for
+    which masked(p) is True (D-loop / origin / homopolymer / NUMT) — the fragile regions that
+    produce coverage 'bowls' with no real junction (e.g. the control-region dip behind the
+    bp314-955 false positive)."""
+    out = []
+    if b < a:
+        return out
+    for p in range(a, b + 1):
+        q = wrap1(p, m)
+        if not masked(q):
+            out.append(dep[q])
+    return out
+
+
+def count_spanning_boundaries(bam, chrom, boundaries, minmapq):
+    """For every breakpoint boundary B (1-based) in `boundaries`, count distinct read TEMPLATES
+    aligned reference-CONTIGUOUSLY across B/(B+1) — wild-type molecules that do NOT carry a deletion
+    there. This is the correct denominator for the junction VAF, replacing the old
+    `SR = total_pileup_depth - JR` (which collapsed AFJ to ~0 at mtDNA depth: JR/depth ~ 0 even for a
+    real 30% deletion). Returns {B: count}.
+
+    A template spans B if some aligned block covers both B and B+1 (continuously matched across the
+    boundary). Reads soft-clipped or SA-split AT B (carrying the deletion) have a block that ENDS at
+    B and are correctly excluded. Primary + supplementary blocks of the same template both count, so
+    an origin-crossing wild-type read (which circSam.pl splits into two arcs) still contributes.
+
+    ONE BAM pass for ALL boundaries (mtDNA has few junctions, so |boundaries| is tiny); per read we
+    test only the boundaries its blocks could cover. Dedupe templates per boundary via a set."""
+    bset = sorted(set(boundaries))
+    if not bset:
+        return {}
+    seen = {b: set() for b in bset}
+    with pysam.AlignmentFile(bam, "rb") as af:
+        for r in af.fetch(chrom):
+            if r.is_unmapped or r.is_secondary:        # keep supplementary (origin-crossing arcs)
+                continue
+            if r.mapping_quality < minmapq:
+                continue
+            tid = r.query_name                          # dedupe across read1/read2 and both arcs
+            for (s, e) in r.get_blocks():               # 0-based [s,e) => covers 1-based [s+1 .. e]
+                lo, hi = s + 1, e
+                for b in bset:
+                    if lo <= b and b + 1 <= hi:
+                        seen[b].add(tid)
+    return {b: len(seen[b]) for b in bset}
+
+
+def spanning_count(span_by_b, bp5, bp3):
+    """SR for one junction = min spanning over its two boundaries (conservative)."""
+    return min(span_by_b.get(bp5, 0), span_by_b.get(bp3 - 1, 0))
+
+
+# --------------------------------------------------------------------------- #
+# Stage B: coverage corroboration, heteroplasmy, flags (replaces svCall.pl)
+# --------------------------------------------------------------------------- #
+# tidy/long TSV column order (parse by NAME downstream, not position)
+TAB_COLUMNS = ["sample", "chrom", "svtype", "pos_bp5", "end_bp3", "svlen", "svclaim", "jr", "sr",
+               "af_junction", "af_coverage", "afdiff", "cvgr", "flank_dp", "homlen",
+               "homseq", "delclass", "common", "ngene", "gene_list", "hgvs", "filter", "flags",
+               "srcons", "srsb", "jsup",          # split-read evidence lens (depth-independent)
+               "svconf", "svimpact", "svimpact_band"]   # call-confidence + biological-impact scores
+
+
+def svconf_score(jr, afj, afc, dose, ratio, srcons, srsb, nfragile, wrapf, drop):
+    """Per-call CONFIDENCE in [0,100] (higher = more likely a TRUE deletion), or None (-> '.') for
+    origin/WRAP calls whose breakpoints are not trustworthy.
+
+    Built ONLY from depth-stable ratios + a saturating count so it rises MONOTONICALLY with heteroplasmy
+    and is comparable across sequencing depths (the property a LoD sweep needs). Three parts:
+      Q  evidence QUALITY (real-vs-artifact, depth-independent): split-read size-consistency SRCONS,
+         strand balance SRSB, and a log-saturated junction-read count.
+      H  heteroplasmy MAGNITUDE (monotone in het, depth-stable RATIO): the dosage AF (AFC) when
+         estimable, else the junction AF (AFJ), ramped to a 30% ceiling.
+      DJ junction<->dosage AGREEMENT bonus, only when a real coverage drop corroborates; RELATIVE-
+         normalized (|AFJ-AFC|/max(AFJ,AFC)) so it does not grow with het (the v1 absolute-AFDIFF
+         penalty made the score non-monotonic at high het).
+    minus a fragile-region PENALTY (DLOOP/HP/NUMT/WRAP at either breakpoint; double-penalized when
+    >=2 categories apply — the recurrent control-region homopolymer artifact signature)."""
+    if wrapf:
+        return None
+    sat_jr = math.log1p(min(jr, 20)) / math.log1p(20)            # 0..1, saturates at JR=20 (depth-stable)
+    q = 14.0 * srcons + 10.0 * min(srsb / 0.40, 1.0) + 8.0 * sat_jr
+    het = afc if dose else afj                                   # dosage AF preferred; junction AF fallback
+    h = 40.0 * min(het / 0.30, 1.0)
+    dj = 0.0
+    if dose and ratio <= drop:                                   # a real coverage drop corroborates
+        dj = 16.0 * max(0.0, 1.0 - abs(afj - afc) / max(afc, afj, 1e-6))
+    pen = (16.0 if nfragile >= 1 else 0.0) + (16.0 if nfragile >= 2 else 0.0)
+    return int(round(max(0.0, min(100.0, q + h + dj - pen))))
+
+
+def svimpact_score(gene_list, bp5, end, svlen, mlc):
+    """Per-call BIOLOGICAL-IMPACT in [0,100] (higher = more damaging IF REAL), INDEPENDENT of call
+    confidence/heteroplasmy (a low-AF call still scores high if the deleted arc is catastrophic).
+
+    mtDNA-deletion impact is near-CATEGORICAL, so the score is the MAX of calibrated biology floors
+    (replication-origin loss / tRNA|rRNA loss / multi-complex knockout / protein-gene loss) plus a small
+    continuous tie-breaker (MLC constraint intensity + genome fraction) that orders calls WITHIN a band.
+    Returns (score, band, mlc_mean, n_complexes). gene_list is the genes_in_deletion 'name:F|P' list."""
+    ntrna_f = nrnr_f = ncds_f = ncds_p = 0
+    cplx = set()
+    for g in gene_list:
+        name, fp = g.rsplit(":", 1)
+        if name.startswith("TRN"):
+            ntrna_f += (fp == "F")
+        elif name.startswith("RNR"):
+            nrnr_f += (fp == "F")
+        elif name in OXPHOS_COMPLEX:
+            ncds_f += (fp == "F")
+            ncds_p += (fp == "P")
+            cplx.add(OXPHOS_COMPLEX[name])
+    d_lo, d_hi = bp5 + 1, end                                   # deleted span (1-based inclusive)
+
+    def removed(a, b):                                          # 2=fully deleted, 1=partial, 0=untouched
+        if d_lo <= a and b <= d_hi:
+            return 2
+        return 1 if (d_lo <= b and a <= d_hi) else 0
+    oh, ol = removed(*ORIH), removed(*ORIL)
+
+    floor = 0
+    if oh == 2 or ol == 2:
+        floor = 95                                             # origin removed -> replication-incompetent
+    elif oh == 1 or ol == 1:
+        floor = max(floor, 70)
+    if ntrna_f + nrnr_f >= 3:
+        floor = max(floor, 78)                                 # massive translation loss (e.g. del4977)
+    elif ntrna_f >= 1 or nrnr_f >= 1:
+        floor = max(floor, 62)                                 # ANY full tRNA/rRNA = translation-lethal
+    if len(cplx) >= 2:
+        floor = max(floor, 60)                                 # multi-complex OXPHOS knockout
+    if ncds_f >= 1:
+        floor = max(floor, 45)                                 # a full protein ORF lost
+    elif ncds_p >= 1:
+        floor = max(floor, 25)                                 # partial protein ORF (truncation)
+
+    span = [mlc[p] for p in range(d_lo, d_hi + 1) if p in mlc] if (mlc and d_hi >= d_lo) else []
+    mlc_mean = (sum(span) / len(span)) if span else 0.0
+    intensity = max(0.0, min(1.0, (mlc_mean - 0.10) / (0.75 - 0.10)))   # 0.10 D-loop floor .. 0.75 high
+    sizef = min((svlen / 16569.0) / 0.50, 1.0)
+    tie = 8.0 * intensity + 4.0 * sizef
+    score = int(round(max(0.0, min(100.0, floor + tie))))
+    band = "SEVERE" if score >= 80 else "HIGH" if score >= 50 else "MODERATE" if score >= 20 else "LOW"
+    return score, band, mlc_mean, len(cplx)
+
+
+def build_record(rec, chrom, sample):
+    """Build (pos, VCF line, tab row) for one call. `svtype` parameterizes the format so DEL/DUP/INV
+    share one emitter: SVLEN is negative for DEL (a loss) and positive for DUP/INV; `DELCLASS`/`COMMON`
+    are DEL-only; `AFC` is the dosage AF for DEL/DUP and `.` (CN-neutral) for INV. With `svtype="DEL"`
+    this reproduces the deletion record byte-for-byte (modulo the added `svtype` tab column)."""
+    svtype = rec["svtype"]
+    afc, afdiff = rec["afc"], rec["afdiff"]
+    afc_s = "%.3f" % afc if afc is not None else "."
+    afdiff_s = "%.3f" % afdiff if afdiff is not None else "."
+    svlen_signed = -rec["svlen"] if svtype == "DEL" else rec["svlen"]
+
+    info = ["SVTYPE=%s" % svtype, "END=%d" % rec["end"], "SVLEN=%d" % svlen_signed,
+            "SVCLAIM=%s" % rec["svclaim"]]
+    if rec["homlen"] > 0:
+        info += ["IMPRECISE", "CIPOS=0,%d" % rec["homlen"], "CIEND=0,%d" % rec["homlen"]]
+    info.append("HOMLEN=%d" % rec["homlen"])
+    if rec["homseq"]:
+        info.append("HOMSEQ=%s" % rec["homseq"])
+    if svtype == "DEL":
+        info.append("DELCLASS=%s" % rec["delclass"])
+    if rec["gene_list"]:
+        info.append("GENE=%s" % ",".join(rec["gene_list"]))
+    info.append("NGENE=%d" % len(rec["gene_list"]))
+    if rec["common"]:
+        info.append("COMMON")
+    info.append("HGVS=%s" % rec["hgvs"])
+    info += ["JR=%d" % rec["jr"], "SR=%d" % rec["sr"], "AFJ=%.3f" % rec["afj"], "AFC=%s" % afc_s,
+             "AFDIFF=%s" % afdiff_s, "CVGR=%.3f" % rec["ratio"],
+             "SRCONS=%.3f" % rec["srcons"], "SRSB=%.3f" % rec["srsb"], "JSUP=%s" % rec["jsup"],
+             "SVCONF=%s" % (rec["svconf"] if rec["svconf"] is not None else "."),
+             "SVIMPACT=%d" % rec["svimpact"], "SVIMPACT_BAND=%s" % rec["svimpact_band"]]
+    info += rec["flags"]
+
+    fmt_val = "0/1:%d:%d,%d:%s:%d" % (rec["med_fl"], rec["sr"], rec["jr"], afc_s, rec["jr"])
+    vcf_line = "%s\t%d\t.\t%s\t<%s>\t.\t%s\t%s\tGT:DP:AD:AF:SR\t%s" % (
+        chrom, rec["bp5"], rec["refbase"], svtype, rec["flt"], ";".join(info), fmt_val)
+    tab_row = "\t".join(str(x) for x in [
+        sample, chrom, svtype, rec["bp5"], rec["end"], rec["svlen"], rec["svclaim"], rec["jr"], rec["sr"],
+        "%.3f" % rec["afj"], afc_s, afdiff_s, "%.3f" % rec["ratio"], rec["med_fl"],
+        rec["homlen"], rec["homseq"], rec["delclass"], 1 if rec["common"] else 0, len(rec["gene_list"]),
+        ",".join(rec["gene_list"]) if rec["gene_list"] else ".", rec["hgvs"],
+        rec["flt"], ",".join(rec["flags"]) if rec["flags"] else ".",
+        "%.3f" % rec["srcons"], "%.3f" % rec["srsb"], rec["jsup"],
+        rec["svconf"] if rec["svconf"] is not None else ".", rec["svimpact"], rec["svimpact_band"]])
+    return rec["bp5"], vcf_line, tab_row
+
+
+def call_inversions(args, seq, dep, masked, hp, dloop, numt, genes, mlc, m, maxsize,
+                    vcf_records, tab_rows):
+    """OPT-IN inversion path (--call-inv). Inversions are detected from OPPOSITE-strand junctions and
+    are copy-number-NEUTRAL, so there is no dosage corroboration — scoring is junction-only (AFJ), and
+    the posture is DETECT-AND-FLAG: a clean, strong, non-fragile BALANCED inversion PASSes; an INVDUP
+    (opposite-strand junction WITH a coverage gain), an origin (WRAP), or a fragile-weak junction does
+    not. AFC is reported `.` (undefined). See docs/SV_EVENT_TYPES.md §3.3."""
+    invs = extract_inversions(args.bam, args.chrom, args.minmapq, args.minsize, maxsize,
+                              args.pad, args.minsupport, m, args.srtol)
+    if not invs:
+        return
+    # right breakend keyed as bp3-1 to match the DEL spanning convention (count_spanning_boundaries
+    # keys on B and B+1), so AFJ uses the same gap for INV and DEL
+    boundaries = [b for (bp5, bp3, _sv, _jr, _c, _s) in invs for b in (bp5, bp3 - 1)]
+    span = count_spanning_boundaries(args.bam, args.chrom, boundaries, args.minmapq)
+    genome_med = trimmed_median([dep[i] for i in range(1, m + 1) if not masked(i)]) or 1.0
+    for (bp5, bp3, svlen, jr, srcons, srsb) in invs:
+        end = bp3
+        sr = min(span.get(bp5, 0), span.get(bp3 - 1, 0))     # wild-type reads spanning the breakpoints
+        afj = jr / (jr + sr) if (jr + sr) > 0 else 0.0
+
+        # INVDUP (fold-back) detection by a LOCAL coverage STEP, not a genome-median compare: the inverted
+        # arm duplicates sequence on ONE side of the junction, so one window (a flank or the inside) is
+        # ELEVATED vs the LOWER flank — an asymmetric step. A balanced inversion is copy-number-NEUTRAL
+        # (inside ≈ both flanks). Comparing locally (not vs the genome median) is robust to mtDNA's
+        # non-flat depth; masked() already excludes HP/DLOOP/NUMT/origin spikes.
+        cov = [trimmed_median(masked_depths(dep, lo, hi, m, masked)) for (lo, hi) in
+               ((bp5 - args.flank, bp5), (bp5, bp3), (bp3, bp3 + args.flank))]
+        base = min(cov[0], cov[2]) or genome_med             # the lower flank = the local CN-neutral level
+        ratio = max(cov) / base
+        invdup = ratio > 1.0 + args.gainpad                  # an asymmetric gain => fold-back inverted DUP
+        d_fl = genome_med
+        jsup = ("HIGH" if (srcons >= args.srmincons and jr >= args.minjr and srsb >= args.srminsb)
+                else "MOD" if srcons >= args.srmincons else "LOW")
+
+        flags = []
+        wrapf = (bp5 <= args.originpad or bp5 >= m - args.originpad
+                 or bp3 <= args.originpad or bp3 >= m - args.originpad)
+        if wrapf:
+            flags.append("WRAP")
+        in_hp = in_iv(hp, bp5) or in_iv(hp, bp3)
+        if in_hp:
+            flags.append("HP")
+        in_dloop = in_iv(dloop, bp5) or in_iv(dloop, bp3)
+        if in_dloop:
+            flags.append("DLOOP")
+        in_numt = (bp5 in numt) or (bp3 in numt)
+        if in_numt:
+            flags.append("NUMT")
+        if invdup:
+            flags.append("INVDUP")
+
+        in_fragile = in_dloop or in_numt or wrapf
+        weak_in_fragile = in_fragile and (afj < args.strongafj or jr < args.strongjr)
+        ifil = []
+        if jr < args.inv_minjr:
+            ifil.append("lowJR")
+        if afj < args.inv_minafj:
+            ifil.append("lowAFJ")
+        if wrapf:
+            ifil.append("WRAP")
+        if weak_in_fragile:
+            ifil.append("fragile_weakJ")
+        if invdup:
+            ifil.append("not_balanced")                      # a fold-back inverted DUP, not a balanced INV
+        flt = "PASS" if not ifil else ";".join(ifil)
+
+        refbase = seq[bp5 - 1].upper() if 1 <= bp5 <= len(seq) else "N"
+        hgvs = "NC_012920.1:m.%d_%dinv" % (bp5 + 1, end)
+        gene_list = genes_in_deletion(genes, bp5, bp3)       # genes within the inverted span
+        nfragile = sum((in_dloop, in_hp, in_numt, wrapf))
+        svconf = svconf_score(jr, afj, 0.0, False, 1.0, srcons, srsb, nfragile, wrapf, args.drop)
+        svimpact, svimpact_band, _, _ = svimpact_score(gene_list, bp5, end, svlen, mlc)
+        pos, vcf_line, tab_row = build_record(dict(
+            svtype="INV", bp5=bp5, end=end, svlen=svlen, refbase=refbase, flt=flt, svclaim="J",
+            jr=jr, sr=sr, afj=afj, afc=None, afdiff=None, ratio=ratio, med_fl=rnd(d_fl),
+            homlen=0, homseq="", delclass=".", common=False, gene_list=gene_list,
+            hgvs=hgvs, srcons=srcons, srsb=srsb, jsup=jsup, svconf=svconf,
+            svimpact=svimpact, svimpact_band=svimpact_band, flags=flags), args.chrom, args.sample)
+        vcf_records.append((pos, vcf_line))
+        tab_rows.append(tab_row)
+
+
+def call(args):
+    maxsize = args.maxsize if args.maxsize else args.mtlen - 1
+    m = args.mtlen
+
+    fa = pysam.FastaFile(args.ref)
+    seq = fa.fetch(args.chrom)
+    fa.close()
+
+    validate_contig(args.bam, args.chrom, m)   # fail cleanly on bad --chrom/--mtlen, even if depth is skipped below
+    junctions = extract_junctions(args.bam, args.chrom, args.minmapq,
+                                  args.minsize, maxsize, args.pad, args.minsupport, m,
+                                  args.minclip, args.srtol)
+    # Per-base depth is read ONLY by the per-junction dosage windows below and (under --call-inv) by
+    # call_inversions. On a sample with no junctions and no inversion path nothing reads it, so skip
+    # the whole-genome count_coverage — the dominant per-sample cost (~78% of runtime; ~2.2 s on a
+    # 2000x chrM). Byte-identical: dep stays None exactly when no consumer exists, and it is absent
+    # from the header/##callsvMasks provenance (the masks below are still loaded unconditionally).
+    dep = per_base_depth(args.bam, args.chrom, m) if (junctions or args.call_inv) else None
+    # wild-type spanning reads for every junction boundary, in ONE BAM pass (not per junction)
+    boundaries = [j[0] for j in junctions] + [j[1] - 1 for j in junctions]
+    span_by_b = count_spanning_boundaries(args.bam, args.chrom, boundaries, args.minmapq)
+
+    hp = load_bed_gz(args.hp)
+    dloop = load_bed_gz(args.dloop)
+    numt = load_vcf_pos(args.numt)
+    genes = load_genes(args.genes, args.chrom)
+    mlc = load_mlc(args.mlc)            # per-base local-constraint scores for the biological-impact score
+    rep = (args.rep5a, args.rep5b, args.rep3a, args.rep3b)
+
+    # mask provenance (emitted as ##callsvMasks): 'off' = not supplied, else the loaded count, so a
+    # reviewer can confirm the false-positive controls were actually populated and not silently empty.
+    def mask_tag(path, n):
+        return "off" if not path else str(n)
+    masks_prov = "hp:%s,numt:%s,dloop:%s,genes:%s,mlc:%s" % (
+        mask_tag(args.hp, len(hp)), mask_tag(args.numt, len(numt)),
+        mask_tag(args.dloop, len(dloop)), mask_tag(args.genes, len(genes)), mask_tag(args.mlc, len(mlc)))
+
+    def masked(p):   # fragile positions excluded from the dosage windows (control region, origin,
+        return (in_iv(dloop, p) or in_iv(hp, p) or (p in numt)   # homopolymers, NUMT-like sites)
+                or p <= args.originpad or p >= m - args.originpad)
+
+    PADt = args.trans     # transition pad: exclude the breakpoint smear from the dosage windows
+    MINBASE = 50          # min usable bases per window for a trustworthy dosage estimate
+
+    vcf_records = []
+    tab_rows = []
+    for (bp5, bp3, svlen, jr, strand, srcons, srsb) in junctions:
+        end = bp3 - 1
+
+        # --- (1) junction VAF with the CORRECTED denominator: true wild-type spanning reads,
+        #         not the whole pileup. AFJ now tracks heteroplasmy at any depth. ---------------
+        sr = spanning_count(span_by_b, bp5, bp3)
+        afj = jr / (jr + sr) if (jr + sr) > 0 else 0.0
+
+        # --- split-read EVIDENCE LENS (independent of read depth): a tier from the consistency
+        #     (srcons) + strand balance (srsb) of the split reads, so a clean, tight junction with
+        #     even a few reads is curatable apart from depth. HIGH = well-supported, consistent,
+        #     two-strand; MOD = clean junction but low count or one-strand (credible low-level event);
+        #     LOW = scattered breakpoint sizes (likely a mapping/NUMT artifact). ---------------
+        jsup = ("HIGH" if (srcons >= args.srmincons and jr >= args.minjr and srsb >= args.srminsb)
+                else "MOD" if srcons >= args.srmincons
+                else "LOW")
+
+        # --- (2) coverage-dosage VAF = PRIMARY heteroplasmy: 1 - trimmed_median(inside)/flank
+        #         over masked, transition-excluded windows (eKLIPse/MitoSAlt/Damas convention) ---
+        insidev = masked_depths(dep, bp5 + PADt + 1, bp3 - PADt - 1, m, masked)
+        flankv = (masked_depths(dep, bp5 - PADt - args.flank + 1, bp5 - PADt, m, masked)
+                  + masked_depths(dep, bp3 + PADt, bp3 + PADt + args.flank - 1, m, masked))
+        d_fl = trimmed_median(flankv)
+        if len(insidev) >= MINBASE and len(flankv) >= MINBASE and d_fl > 0:
+            ratio = trimmed_median(insidev) / d_fl                  # masked coverage ratio
+            afc = max(0.0, min(1.0, 1.0 - ratio))                  # dosage heteroplasmy (primary)
+            dose = True
+        else:                       # interior too small / over-masked -> dosage not estimable
+            ratio, afc, dose = 1.0, afj, False                     # fall back to junction-only
+        afdiff = abs(afj - afc)
+        med_fl = rnd(d_fl)
+
+        # breakpoint microhomology / direct repeat -> precision + class
+        homlen, homseq = microhomology(seq, bp5, bp3, m)
+        delclass = "I" if homlen >= 5 else ("II" if homlen >= 1 else "III")
+        gene_list = genes_in_deletion(genes, bp5 + 1, end)
+        svclaim = "DJ" if (dose and ratio <= args.drop) else "J"    # depth+junction vs junction-only
+        common = (near(bp5, COMMON_BP5[0], COMMON_BP5[1], args.pad)
+                  and near(bp3, COMMON_BP3[0], COMMON_BP3[1], args.pad)
+                  and COMMON_SVLEN[0] <= svlen <= COMMON_SVLEN[1])
+
+        # advisory breakpoint-region flags
+        flags = []
+        if (near(bp5, rep[0], rep[1], args.pad) or near(bp3, rep[2], rep[3], args.pad)
+                or near(bp5, rep[2], rep[3], args.pad) or near(bp3, rep[0], rep[1], args.pad)):
+            flags.append("REPEAT")
+        # WRAP = the deletion is at/near the artificial origin OR is the inverted complementary arc of
+        # an origin-crossing deletion. The latter case: an origin-crossing deletion of a SMALL arc is
+        # linearized as its near-genome-length COMPLEMENT (svlen > MTLEN/2). Coverage disambiguates —
+        # the reported (majority) span is the RETAINED arc, so it shows FULL depth (no dosage drop); a
+        # real majority-arc deletion would instead show a drop. No drop => the real, smaller deleted arc
+        # crosses the origin (del-vs-complementary-arc, docs/SV_METHODS §8). Flagging it WRAP only
+        # relabels an ALREADY-non-PASS call (the BIGDEL j_pass block + no_cvg_drop reject it regardless)
+        # and blanks its SVCONF — making the origin artifact explicit instead of a bare 16 kb deletion.
+        no_drop = (not dose) or (ratio > args.drop)
+        wrapf = (bp5 <= args.originpad or bp5 >= m - args.originpad
+                 or bp3 <= args.originpad or bp3 >= m - args.originpad
+                 or (svlen > m // 2 and no_drop))
+        if wrapf:
+            flags.append("WRAP")
+        in_hp = in_iv(hp, bp5) or in_iv(hp, bp3)
+        if in_hp:
+            flags.append("HP")
+        in_dloop = in_iv(dloop, bp5) or in_iv(dloop, bp3)
+        if in_dloop:
+            flags.append("DLOOP")
+        in_numt = (bp5 in numt) or (bp3 in numt)
+        if in_numt:
+            flags.append("NUMT")
+
+        # --- (3) PASS / FILTER: TWO independent evidence paths; PASS if EITHER is satisfied. ---
+        #   DJ path: a dosage drop corroborated by a PROPORTIONAL junction, non-fragile.
+        #   J  path: strong, clean split-read evidence ALONE — no coverage drop required (mtDNA
+        #            read depth is finicky, so a high-confidence junction is the highest signal).
+        # Both gate on the CORRECTED AFJ, so neither re-admits the depth-noise artifacts (AFJ~0).
+        in_fragile = in_dloop or in_numt or wrapf
+        weak_in_fragile = in_fragile and (afj < args.strongafj or jr < args.strongjr)
+        bigdel_weak = svlen >= args.bigdel and (jr < args.bigminjr or afj < args.bigminafj)
+        cvg_gain = ratio > 1.0 + args.gainpad          # coverage GAIN => duplication, not a deletion
+
+        fil = []                                              # DJ-path failures (reported on FILTER)
+        if jr < args.minjr:
+            fil.append("lowJR")                               # too few junction reads
+        if ratio > args.drop:
+            fil.append("no_cvg_drop")                         # < ~10% dosage loss
+        if wrapf:
+            fil.append("WRAP")                                # origin: DEL vs DUP unresolved
+        if args.mindepth and d_fl < args.mindepth:
+            fil.append("lowDP")                               # flank depth too low to trust
+        if afc < args.minaf:
+            fil.append("low_dosage")                          # dosage drop below MINAF
+        if afj < args.minafj:
+            fil.append("lowAFJ")                              # junction fraction floor
+        if afj < args.affrac * afc:
+            fil.append("unexplained_drop")                    # drop not junction-corroborated
+        if weak_in_fragile:
+            fil.append("fragile_weakJ")                       # fragile region needs strong junction
+        if bigdel_weak:
+            fil.append("bigdel_weakJ")                        # huge deletion needs strong junction
+        dj_pass = not fil
+
+        # junction-strong path: depth-independent. High corrected AFJ + many junction reads, not at
+        # the origin, not a coverage GAIN (that is a duplication), not fragile-weak, and NOT a very
+        # large deletion (svlen < BIGDEL): huge "deletions" are dominated by the origin-crossing
+        # complementary-arc artifact and MUST be dosage-corroborated, so junction-only is not enough.
+        # Lets a real small/moderate deletion with clean reads but a noisy/absent dosage drop PASS.
+        j_pass = (jr >= args.jminjr and afj >= args.jminafj and svlen < args.bigdel
+                  and not wrapf and not cvg_gain and not weak_in_fragile)
+
+        if dj_pass:
+            flt = "PASS"                                      # depth + junction corroborate (SVCLAIM may be DJ)
+        elif j_pass:
+            flt, svclaim = "PASS", "J"                        # junction-only high-confidence PASS
+        else:
+            flt = ";".join(fil)
+
+        # --- (3b) OPT-IN tandem DUPLICATION (--call-dup; default off => the gain stays a non-PASS DEL,
+        #     the frozen behavior). A junction with a coverage GAIN over [bp5,bp3] is the tandem-dup
+        #     boundary, not a deletion: reclassify SVTYPE=DUP, flip the dosage AF to the GAIN fraction
+        #     (1+AFC = ratio), and PASS on a junction-corroborated gain off the origin / out of fragile
+        #     regions. Origin (WRAP) candidates are left to the deferred origin-resolution, not called. ---
+        svtype = "DEL"
+        if args.call_dup and cvg_gain and not wrapf:
+            # NOTE (v1): the discriminator is the coverage GAIN over [bp5,bp3] (a real deletion has a
+            # DROP, never a gain, so it is never mis-called here). The everted-vs-forward junction
+            # ORIENTATION is collapsed by extract_junctions and not re-derived, so the gain must carry
+            # the call — hence the NUMT/HP gates below (an artifact gain under a junction is the main
+            # residual FP). Wiring orientation through for a belt-and-suspenders check is deferred
+            # (docs/SV_EVENT_TYPES.md §3.2).
+            svtype = "DUP"
+            afc = max(0.0, min(1.0, ratio - 1.0))             # dup heteroplasmy = the gain fraction
+            afdiff = abs(afj - afc)
+            svclaim = "DJ" if dose else "J"                   # DJ only when the dosage gain is estimable
+            delclass, common = ".", False                     # DELCLASS/COMMON are deletion-only
+            dfil = []
+            if jr < args.minjr:   dfil.append("lowJR")
+            if afj < args.minafj: dfil.append("lowAFJ")
+            if afc < args.minaf:  dfil.append("low_dosage")   # gain below the min dosage AF
+            if weak_in_fragile:   dfil.append("fragile_weakJ")
+            if in_numt:           dfil.append("NUMT")         # NUMT artifacts are the dominant false DUP
+            if in_hp:             dfil.append("HP")           # homopolymer/STR slippage false gains
+            flt = "PASS" if not dfil else ";".join(dfil)
+
+        refbase = seq[bp5 - 1].upper() if 1 <= bp5 <= len(seq) else "N"
+        hgvs = "NC_012920.1:m.%d_%d%s" % (bp5 + 1, end, "dup" if svtype == "DUP" else "del")
+
+        # --- (4) two ORTHOGONAL per-call scores (additive; see docs/SV_METHODS §9):
+        #   SVCONF   = call confidence (true-vs-artifact), from depth-stable evidence - fragile penalty
+        #   SVIMPACT = biological impact IF REAL, from gene/origin/complex content + MLC intensity
+        nfragile = sum((in_dloop, in_hp, in_numt, wrapf))      # fragile categories at either breakpoint
+        svconf = svconf_score(jr, afj, afc, dose, ratio, srcons, srsb, nfragile, wrapf, args.drop)
+        svimpact, svimpact_band, mlc_mean, ncplx = svimpact_score(gene_list, bp5, end, svlen, mlc)
+
+        pos, vcf_line, tab_row = build_record(dict(
+            svtype=svtype, bp5=bp5, end=end, svlen=svlen, refbase=refbase, flt=flt, svclaim=svclaim,
+            jr=jr, sr=sr, afj=afj, afc=afc, afdiff=afdiff, ratio=ratio, med_fl=med_fl,
+            homlen=homlen, homseq=homseq, delclass=delclass, common=common, gene_list=gene_list,
+            hgvs=hgvs, srcons=srcons, srsb=srsb, jsup=jsup, svconf=svconf,
+            svimpact=svimpact, svimpact_band=svimpact_band, flags=flags), args.chrom, args.sample)
+        vcf_records.append((pos, vcf_line))
+        tab_rows.append(tab_row)
+
+    if args.call_inv:
+        call_inversions(args, seq, dep, masked, hp, dloop, numt, genes, mlc,
+                        m, maxsize, vcf_records, tab_rows)
+
+    vcf_records.sort(key=lambda r: r[0])     # POS-sorted
+    write_vcf(args, [r[1] for r in vcf_records], seq, masks_prov)
+    if args.tab:
+        with open(args.tab, "w") as t:
+            t.write("\t".join(TAB_COLUMNS) + "\n")
+            for row in tab_rows:
+                t.write(row + "\n")
+    sys.stderr.write("[callsv] %s -> %s (%d records)\n" % (args.sample, args.out, len(vcf_records)))
+
+
+def write_vcf(args, records, seq, masks_prov=""):
+    """Emit a spec-correct VCFv4.2: dynamic provenance + contig/reference headers, the
+    static field definitions from the template, a #CHROM line whose genotype column is the
+    real sample name, then the records."""
+    out = open(args.out, "w") if args.out else sys.stdout
+    out.write("##fileformat=VCFv4.2\n")
+    out.write("##fileDate=%s\n" % datetime.date.today().strftime("%Y%m%d"))
+    out.write("##source=MitoHPC_callsv %s (pysam %s)\n" % (args.version or "dev", pysam.__version__))
+    out.write("##reference=file://%s\n" % os.path.abspath(args.ref))
+    out.write("##contig=<ID=%s,length=%d,md5=%s>\n" % (args.chrom, args.mtlen, fasta_md5(seq)))
+    out.write("##sample=%s\n" % args.sample)
+    out.write('##callsv_command="%s"\n' % " ".join(sys.argv))
+    if masks_prov:   # false-positive-control provenance: off|<intervals loaded> per mask
+        out.write("##callsvMasks=%s\n" % masks_prov)
+    # name each provenance line by its real HP_SV_* env var (the argparse key 'mindepth' is exposed
+    # as HP_SV_MINDP in init.sh/callSV.sh, so don't emit the literal-uppercased 'MINDEPTH')
+    param_env = {"minmapq": "MINMAPQ", "minclip": "MINCLIP", "minjr": "MINJR", "minsize": "MINSIZE", "maxsize": "MAXSIZE",
+                 "pad": "PAD", "drop": "DROP", "flank": "FLANK", "mindepth": "MINDP",
+                 "trans": "TRANS", "minaf": "MINAF", "minafj": "MINAFJ", "affrac": "AFFRAC",
+                 "strongafj": "STRONGAFJ", "strongjr": "STRONGJR", "bigdel": "BIGDEL",
+                 "bigminjr": "BIGMINJR", "bigminafj": "BIGMINAFJ",
+                 "jminjr": "JMINJR", "jminafj": "JMINAFJ", "gainpad": "GAINPAD",
+                 "srtol": "SRTOL", "srmincons": "SRMINCONS", "srminsb": "SRMINSB"}
+    for k in ("minmapq", "minclip", "minjr", "minsize", "maxsize", "pad", "drop", "flank", "mindepth",
+              "trans", "minaf", "minafj", "affrac", "strongafj", "strongjr", "bigdel",
+              "bigminjr", "bigminafj", "jminjr", "jminafj", "gainpad", "srtol", "srmincons", "srminsb"):
+        out.write("##callsv_param_HP_SV_%s=%s\n" % (param_env[k], getattr(args, k)))
+    with open(args.header) as h:                  # static ##ALT/##FILTER/##INFO/##FORMAT
+        for line in h:
+            line = line.rstrip("\n")
+            if line and not line.startswith("#CHROM"):
+                out.write(line + "\n")
+    out.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t%s\n" % args.sample)
+    for rec in records:
+        out.write(rec + "\n")
+    if args.out:
+        out.close()
+
+
+# --------------------------------------------------------------------------- #
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--bam", required=True)
+    p.add_argument("--ref", required=True, help="chrM FASTA (indexed)")
+    p.add_argument("--header", required=True, help="VCF header template (scripts/sv.vcf)")
+    p.add_argument("--sample", default="SAMPLE")
+    p.add_argument("--out", help="output VCF path (default stdout)")
+    p.add_argument("--tab", help="output flat-table path")
+    p.add_argument("--chrom", default="chrM")
+    p.add_argument("--mtlen", type=int, default=16569)
+    p.add_argument("--minmapq", type=int, default=20)
+    p.add_argument("--minclip", type=int, default=10, help="min soft-clip length (bp) to harvest a clipped read onto an existing SA junction (0 disables)")
+    p.add_argument("--minjr", type=int, default=3)
+    p.add_argument("--minsize", type=int, default=50)
+    p.add_argument("--maxsize", type=int, default=0)
+    p.add_argument("--pad", type=int, default=25)
+    p.add_argument("--drop", type=float, default=0.9)
+    p.add_argument("--flank", type=int, default=200)
+    p.add_argument("--mindepth", type=int, default=0)
+    # heteroplasmy + consistency-gate tunables (v2; exposed as HP_SV_* via callSV.sh)
+    p.add_argument("--trans", type=int, default=150, help="transition pad excluded from dosage windows")
+    p.add_argument("--minaf", type=float, default=0.03, help="min coverage-dosage AF for PASS")
+    p.add_argument("--minafj", type=float, default=0.02, help="min corrected junction VAF for PASS")
+    p.add_argument("--affrac", type=float, default=0.30, help="AFJ must be >= affrac*AFC (drop junction-corroborated)")
+    p.add_argument("--strongafj", type=float, default=0.05, help="junction strength to PASS in a fragile region")
+    p.add_argument("--strongjr", type=int, default=10, help="junction-read count to PASS in a fragile region")
+    p.add_argument("--bigdel", type=int, default=8000, help="'very large' deletion threshold (bp)")
+    p.add_argument("--bigminjr", type=int, default=8, help="min JR for a very large deletion")
+    p.add_argument("--bigminafj", type=float, default=0.02, help="min corrected AFJ for a very large deletion")
+    # junction-strong PASS path: high-confidence split reads can PASS without a coverage drop
+    p.add_argument("--jminjr", type=int, default=8, help="min JR for a junction-only (depth-independent) PASS")
+    p.add_argument("--jminafj", type=float, default=0.05, help="min corrected AFJ for a junction-only PASS")
+    p.add_argument("--gainpad", type=float, default=0.10, help="coverage-gain tolerance; ratio>1+gainpad => DUP, blocks junction-only PASS")
+    # OPT-IN additional event classes (default OFF => deletion-only, the frozen path; see
+    # docs/SV_EVENT_TYPES.md). DUP reuses the same junction+coverage machinery (a gain candidate);
+    # INV adds a separate opposite-strand-junction branch.
+    p.add_argument("--call-dup", dest="call_dup", action="store_true",
+                   help="also call tandem DUPLICATIONS (a junction with a coverage GAIN) as SVTYPE=DUP")
+    p.add_argument("--call-inv", dest="call_inv", action="store_true",
+                   help="also call INVERSIONS (opposite-strand junctions, CN-neutral) as SVTYPE=INV")
+    p.add_argument("--inv-minafj", dest="inv_minafj", type=float, default=0.10,
+                   help="min junction VAF for an INV to PASS (detect-and-flag; INV has no dosage signal)")
+    p.add_argument("--inv-minjr", dest="inv_minjr", type=int, default=6,
+                   help="min opposite-strand junction reads for an INV to PASS")
+    # split-read evidence lens (SRCONS/SRSB/JSUP) — depth-independent junction quality for curation
+    p.add_argument("--srtol", type=int, default=5, help="bp tolerance on per-read deletion SIZE for the split-read consistency SRCONS")
+    p.add_argument("--srmincons", type=float, default=0.7, help="min SRCONS for JSUP=MOD/HIGH (a clean, consistent junction)")
+    p.add_argument("--srminsb", type=float, default=0.1, help="min strand balance SRSB for JSUP=HIGH")
+    p.add_argument("--hp")
+    p.add_argument("--numt")
+    p.add_argument("--dloop")
+    p.add_argument("--genes", help="6-col BED(.gz) of mtDNA features for affected-gene annotation")
+    p.add_argument("--mlc", help="MLC.vcf.gz per-base local-constraint scores for the SVIMPACT intensity term")
+    p.add_argument("--version", help="tool version string for the VCF ##source line")
+    # Fixed v1 constants (callSV.sh does not expose these as HP_SV_*; the canonical defaults
+    # live here, used for standalone/test invocation): cluster floor, origin guard, and the
+    # del4977 13bp direct-repeat windows (m.8470-8482 / 13447-13459).
+    p.add_argument("--minsupport", type=int, default=2)
+    p.add_argument("--originpad", type=int, default=20)
+    p.add_argument("--rep5a", type=int, default=8470)
+    p.add_argument("--rep5b", type=int, default=8482)
+    p.add_argument("--rep3a", type=int, default=13447)
+    p.add_argument("--rep3b", type=int, default=13459)
+    args = p.parse_args()
+    try:
+        call(args)
+    except (ValueError, OSError, KeyError) as e:   # KeyError: pysam FastaFile.fetch bad contig
+        sys.exit("[callsv] ERROR: %s (bam=%s, ref=%s, chrom=%s)"
+                 % (e, args.bam, args.ref, args.chrom))
+
+
+if __name__ == "__main__":
+    main()

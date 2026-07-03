@@ -108,6 +108,18 @@ export HP_T3=10
 export HP_DP=50                  # minimum coverage; lowered from 100 to 50
 export HP_V=                     # SV caller: gridssexport HP_DP=100                 # minimum coverage: Ex 100
 
+# Structural-variant (large-deletion) module: standalone, additive, default OFF.
+# When empty the pipeline output is unchanged. See docs/SV_CALLING.md.
+export HP_SV=                     # large-deletion caller: callsv (empty=off)
+export HP_SV_MINJR=3              # min junction-supporting split reads for a PASS deletion
+export HP_SV_MINMAPQ=20           # min MAPQ for split reads (NUMT multimapper guard)
+export HP_SV_MINSIZE=50           # min deletion size (bp)
+export HP_SV_MAXSIZE=0            # max deletion size (bp; 0 => MTLEN-1)
+export HP_SV_PAD=25               # breakpoint clustering / direct-repeat tolerance (bp)
+export HP_SV_DROP=0.9             # max medInside/medFlank coverage ratio for PASS (<=0.9 => >=10% drop)
+export HP_SV_FLANK=200            # flanking window for the coverage-ratio estimate (bp)
+export HP_SV_MINDP=0              # min flank depth for PASS (0=off)
+
 export HP_FRULE="perl -ane 'print unless(/strict_strand|strand_bias|base_qual|map_qual|weak_evidence|slippage|position|Homopolymer/ and /:0\.[01234]\d+$/);' |  bcftools filter -e 'DP<$HP_DP'"   # filter rule (or just "tee")
 
 # Automatically detect available CPU cores, with user override capability

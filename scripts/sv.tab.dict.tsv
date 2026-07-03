@@ -1,0 +1,31 @@
+column	type	description
+sample	string	Sample name (from HP_IN); rows are one per (sample, SV event).
+chrom	string	Contig name (chrM / rCRS); circular mtDNA, 16569 bp.
+svtype	DEL|DUP|INV	SV type. DEL is default; DUP/INV are opt-in (HP_SV_DUP / HP_SV_INV).
+pos_bp5	int(1-based)	5' breakpoint: last retained base before the event (VCF POS).
+end_bp3	int(1-based)	3' breakpoint: last deleted base for DEL (VCF END). MitoBreak's 3' bp = end_bp3+1.
+svlen	int(bp,>0)	Event length in bp (the VCF SVLEN is signed: negative for DEL).
+svclaim	DJ|J	PASS evidence path: DJ = coverage-drop and junction agree; J = junction-strong alone.
+jr	int	Junction-supporting split reads.
+sr	int	Wild-type reads spanning the breakpoints (denominator of AFJ).
+af_junction	float[0,1]	Junction VAF (AFJ) = jr / (jr + sr).
+af_coverage	float[0,1] or .	Coverage-dosage VAF (AFC) = 1 - inside/flank depth; PRIMARY heteroplasmy. '.' for INV.
+afdiff	float	|AFC - AFJ|: agreement QC between the two heteroplasmy estimates.
+cvgr	float	Masked coverage ratio inside/flank (the basis of AFC).
+flank_dp	int	Trimmed-median flanking read depth.
+homlen	int	Breakpoint microhomology / direct-repeat length (bp).
+homseq	string	Microhomology/direct-repeat sequence; empty when homlen=0.
+delclass	I|II|III|.	Breakpoint-homology class: I=perfect repeat >=5 bp, II=1-4 bp microhomology, III=blunt. '.' if not DEL.
+common	0|1	1 if the call matches the common deletion del4977 (m.8470_13447) within tolerance.
+ngene	int	Number of genes/features the event overlaps.
+gene_list	string	Comma-joined overlapped gene/feature names, or '.'.
+hgvs	string	HGVS-style description, e.g. NC_012920.1:m.8483_13446del.
+filter	string	VCF FILTER: PASS, or ';'-joined non-PASS reasons (lowJR, no_cvg_drop, low_dosage, lowAFJ, WRAP, ...).
+flags	string	FP-control flags (REPEAT, NUMT, HP, DLOOP, WRAP, INVDUP, ...), comma-joined or '.'; annotate (mostly non-rejecting).
+srcons	float[0,1]	Split-read size consistency (microhomology-invariant).
+srsb	float[0,1]	Split-read strand balance.
+jsup	HIGH|MOD|LOW	Split-read evidence tier (depth-independent).
+svconf	int[0,100] or .	Per-call confidence (higher = more likely a true event); '.' for WRAP/origin calls.
+svimpact	int	Biological-impact score (gene/origin/constraint weighted).
+svimpact_band	string	Impact band label (e.g. SEVERE / MODERATE / ...).
+mitobreak	string	[COHORT-ONLY] Closest matching MitoBreak previously-reported breakpoint id (DEL_bp5_bp3 / DUP_bp5_bp3) within HP_SV_MITOBREAK_TOL bp, or '.'. Added by getSVSummary.sh/svMitoBreak.py; NOT present in per-sample $O.sv.tab.

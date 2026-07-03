@@ -1,0 +1,85 @@
+##fileformat=VCFv4.2
+##fileDate=20260625
+##source=MitoHPC_callsv (example output)
+##reference=file://./RefSeq/chrM.fa
+##contig=<ID=chrM,length=16569,md5=c68f52674c9fb33aef52dcf399755519>
+##sample=sv_del4977_h30
+##callsv_command="./scripts/callsv.py --bam ./test/sv/bams/sv_del4977_h30.bam --ref ./RefSeq/chrM.fa --header ./scripts/sv.vcf --sample sv_del4977_h30 --out ./out/out/sv_del4977_h30/sv_del4977_h30.sv.vcf --tab ./out/out/sv_del4977_h30/sv_del4977_h30.sv.tab --version example --chrom chrM --mtlen 16569 --minmapq 20 --minclip 10 --minjr 3 --minsize 50 --maxsize 0 --pad 25 --drop 0.9 --flank 200 --mindepth 0 --trans 150 --minaf 0.03 --minafj 0.02 --affrac 0.30 --strongafj 0.05 --strongjr 10 --bigdel 8000 --bigminjr 8 --bigminafj 0.02 --jminjr 8 --jminafj 0.05 --gainpad 0.10 --inv-minafj 0.10 --inv-minjr 6 --srtol 5 --srmincons 0.7 --srminsb 0.1 --hp ./RefSeq/HP.bed.gz --numt ./RefSeq/NUMT.vcf.gz --dloop ./RefSeq/DLOOP.bed.gz --genes ./RefSeq/genes.bed.gz --mlc ./RefSeq/MLC.vcf.gz"
+##callsvMasks=hp:27,numt:381,dloop:6,genes:42,mlc:16568
+##callsv_param_HP_SV_MINMAPQ=20
+##callsv_param_HP_SV_MINCLIP=10
+##callsv_param_HP_SV_MINJR=3
+##callsv_param_HP_SV_MINSIZE=50
+##callsv_param_HP_SV_MAXSIZE=0
+##callsv_param_HP_SV_PAD=25
+##callsv_param_HP_SV_DROP=0.9
+##callsv_param_HP_SV_FLANK=200
+##callsv_param_HP_SV_MINDP=0
+##callsv_param_HP_SV_TRANS=150
+##callsv_param_HP_SV_MINAF=0.03
+##callsv_param_HP_SV_MINAFJ=0.02
+##callsv_param_HP_SV_AFFRAC=0.3
+##callsv_param_HP_SV_STRONGAFJ=0.05
+##callsv_param_HP_SV_STRONGJR=10
+##callsv_param_HP_SV_BIGDEL=8000
+##callsv_param_HP_SV_BIGMINJR=8
+##callsv_param_HP_SV_BIGMINAFJ=0.02
+##callsv_param_HP_SV_JMINJR=8
+##callsv_param_HP_SV_JMINAFJ=0.05
+##callsv_param_HP_SV_GAINPAD=0.1
+##callsv_param_HP_SV_SRTOL=5
+##callsv_param_HP_SV_SRMINCONS=0.7
+##callsv_param_HP_SV_SRMINSB=0.1
+##ALT=<ID=DEL,Description="Deletion">
+##ALT=<ID=DUP,Description="Tandem duplication (opt-in --call-dup): a split-read junction with a coverage GAIN over the duplicated span">
+##ALT=<ID=INV,Description="Inversion (opt-in --call-inv): opposite-strand split-read junctions, copy-number-neutral">
+##FILTER=<ID=PASS,Description="Deletion passed: a split-read junction corroborated by a coverage drop (SVCLAIM=DJ) OR high-confidence split reads alone (SVCLAIM=J); see SVCLAIM">
+##FILTER=<ID=lowJR,Description="Fewer than HP_SV_MINJR junction-supporting reads">
+##FILTER=<ID=no_cvg_drop,Description="medInside/medFlank above HP_SV_DROP (split-read only, no coverage corroboration)">
+##FILTER=<ID=WRAP,Description="Breakpoint near the artificial origin / origin-crossing; deletion-vs-duplication unresolved in v1">
+##FILTER=<ID=lowDP,Description="Flanking wild-type depth below HP_SV_MINDP">
+##FILTER=<ID=low_dosage,Description="Coverage-dosage heteroplasmy (AFC) below HP_SV_MINAF">
+##FILTER=<ID=lowAFJ,Description="Corrected junction VAF (AFJ) below HP_SV_MINAFJ (depth-robust junction-support floor)">
+##FILTER=<ID=unexplained_drop,Description="Coverage drop not corroborated by a proportional junction: AFJ < HP_SV_AFFRAC*AFC (likely a coverage artifact / NUMT / mappability dip)">
+##FILTER=<ID=fragile_weakJ,Description="Breakpoint in a fragile region (D-loop / NUMT / origin) without strong junction support (AFJ>=HP_SV_STRONGAFJ and JR>=HP_SV_STRONGJR)">
+##FILTER=<ID=bigdel_weakJ,Description="Very large deletion (>=HP_SV_BIGDEL bp) with weak junction support (JR<HP_SV_BIGMINJR or AFJ<HP_SV_BIGMINAFJ)">
+##FILTER=<ID=not_balanced,Description="Inversion record carrying a coverage gain = an inverted DUP (fold-back, INVDUP flag), not a balanced copy-number-neutral inversion">
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="Type of structural variant: DEL (deletion), DUP (tandem duplication, --call-dup), INV (inversion, --call-inv)">
+##INFO=<ID=END,Number=1,Type=Integer,Description="End position: last deleted base for DEL (= POS + |SVLEN|); the duplicated/inverted span end for DUP/INV">
+##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="Difference in length between REF and ALT alleles: NEGATIVE for DEL (a loss), POSITIVE for DUP/INV (VCFv4.2 convention)">
+##INFO=<ID=SVCLAIM,Number=A,Type=String,Description="Evidence claim (VCF4.4): DJ=depth+junction together, J=junction/adjacency alone. A PASS with SVCLAIM=J was confirmed by high-confidence split reads alone (no required coverage drop); DJ by both. (D=depth/abundance-only is reserved per spec but not emitted: a depth-only call never PASSes here.)">
+##INFO=<ID=IMPRECISE,Number=0,Type=Flag,Description="Imprecise breakpoint (ambiguous within a direct repeat / microhomology)">
+##INFO=<ID=CIPOS,Number=.,Type=Integer,Description="Confidence interval around POS for imprecise variants (offset pairs, each spanning 0)">
+##INFO=<ID=CIEND,Number=.,Type=Integer,Description="Confidence interval around END for imprecise variants (offset pairs, each spanning 0)">
+##INFO=<ID=HOMLEN,Number=.,Type=Integer,Description="Length of base-pair-identical microhomology / direct repeat at the breakpoints">
+##INFO=<ID=HOMSEQ,Number=.,Type=String,Description="Sequence of the breakpoint microhomology / direct repeat">
+##INFO=<ID=DELCLASS,Number=1,Type=String,Description="Breakpoint homology class: I=perfect direct repeat >=5bp, II=microhomology 1-4bp, III=no homology">
+##INFO=<ID=GENE,Number=.,Type=String,Description="mtDNA features overlapping the deletion, name:F (fully deleted) or name:P (partially)">
+##INFO=<ID=NGENE,Number=1,Type=Integer,Description="Number of mtDNA features overlapping the deletion">
+##INFO=<ID=COMMON,Number=0,Type=Flag,Description="Matches the MITOMAP common deletion del4977 (m.8470_13447, within tolerance)">
+##INFO=<ID=HGVS,Number=1,Type=String,Description="Approximate HGVS deletion span on rCRS/NC_012920.1">
+##INFO=<ID=JR,Number=1,Type=Integer,Description="Distinct junction-supporting split reads (site-level)">
+##INFO=<ID=SR,Number=1,Type=Integer,Description="Wild-type reads aligned reference-contiguously across a breakpoint (true spanning count; the AFJ denominator), min over the two breakpoints">
+##INFO=<ID=AFJ,Number=1,Type=Float,Description="Junction-fraction EVIDENCE = JR/(JR+SR); depth-robust gate input, NOT the reported heteroplasmy for large deletions">
+##INFO=<ID=AFC,Number=1,Type=Float,Description="Coverage-dosage heteroplasmy (PRIMARY) = 1 - trimmedMedian(inside)/trimmedMedian(flank), with D-loop/origin/HP/NUMT masking and an HP_SV_TRANS transition pad (eKLIPse/MitoSAlt/Damas convention)">
+##INFO=<ID=AFDIFF,Number=1,Type=Float,Description="abs(AFJ-AFC) junction-vs-dosage consistency QC; large => coverage drop not junction-corroborated">
+##INFO=<ID=CVGR,Number=1,Type=Float,Description="masked trimmedMedian(inside)/trimmedMedian(flank) coverage ratio (1 = no drop)">
+##INFO=<ID=SRCONS,Number=1,Type=Float,Description="Split-read consistency: fraction of supporting reads agreeing on the deletion SIZE (svlen, microhomology-invariant) within HP_SV_SRTOL bp; ~1=tight junction, low=scattered (likely artifact)">
+##INFO=<ID=SRSB,Number=1,Type=Float,Description="Split-read strand balance min(+,-)/total of supporting reads (0=one-strand-only, a classic artifact signature; 0.5=balanced)">
+##INFO=<ID=JSUP,Number=1,Type=String,Description="Split-read evidence tier (depth-independent curation lens): HIGH=consistent, >=HP_SV_MINJR reads, two-strand; MOD=clean/consistent junction but low-count or one-strand (credible low-level event); LOW=scattered breakpoint sizes (likely a mapping/NUMT artifact)">
+##INFO=<ID=SVCONF,Number=1,Type=Integer,Description="Call-confidence score 0-100 (higher=more likely a TRUE deletion, NOT a heteroplasmy estimate): depth-stable evidence quality (SRCONS, SRSB, log-saturated JR) + heteroplasmy magnitude (AFC, else AFJ, ramped to 30%) + junction-vs-dosage agreement when depth-corroborated, minus a fragile-region penalty (DLOOP/HP/NUMT/WRAP at either breakpoint, double-weighted when >=2 categories). '.' for WRAP/origin calls. Orthogonal to SVIMPACT and to AF. See docs/SV_METHODS.md">
+##INFO=<ID=SVIMPACT,Number=1,Type=Integer,Description="Biological-impact score 0-100 (higher=more functionally damaging IF REAL), independent of confidence and heteroplasmy: max of near-categorical biology floors (replication origin OriH/OriL removed=95, partial=70; >=3 tRNA/rRNA fully deleted=78; any tRNA/rRNA=62; >=2 OXPHOS complexes disrupted=60; a full protein gene=45; partial protein=25) plus an MLC constraint-intensity & genome-fraction tie-breaker">
+##INFO=<ID=SVIMPACT_BAND,Number=1,Type=String,Description="SVIMPACT band: LOW (<20), MODERATE (20-49), HIGH (50-79), SEVERE (>=80)">
+##INFO=<ID=REPEAT,Number=0,Type=Flag,Description="Breakpoint near the del4977 13bp direct repeat (m.8470-8482 / 13447-13459)">
+##INFO=<ID=NUMT,Number=0,Type=Flag,Description="Breakpoint overlaps a known NUMT-like site (RefSeq/NUMT.vcf.gz)">
+##INFO=<ID=HP,Number=0,Type=Flag,Description="Breakpoint inside a homopolymer run (RefSeq/HP.bed.gz)">
+##INFO=<ID=DLOOP,Number=0,Type=Flag,Description="Breakpoint in the control region / D-loop (RefSeq/DLOOP.bed.gz)">
+##INFO=<ID=WRAP,Number=0,Type=Flag,Description="Breakpoint near the artificial origin / origin-crossing">
+##INFO=<ID=INVDUP,Number=0,Type=Flag,Description="Inversion with a co-located coverage gain = a fold-back inverted duplication (Sniffles2 INVDUP), not a balanced inversion">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Flanking wild-type read depth (round of medFlank)">
+##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths for the REF (spanning) and ALT (junction) alleles: SR,JR">
+##FORMAT=<ID=AF,Number=A,Type=Float,Description="Heteroplasmy = coverage-dosage AF (AFC): 1 - trimmedMedian(inside)/trimmedMedian(flank), D-loop/origin/HP/NUMT masked, HP_SV_TRANS transition pad">
+##FORMAT=<ID=SR,Number=1,Type=Integer,Description="Split (junction) reads supporting the deletion (= JR; Manta-style per-sample split-read support)">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	sv_del4977_h30
+chrM	8482	.	A	<DEL>	.	PASS	SVTYPE=DEL;END=13446;SVLEN=-4964;SVCLAIM=DJ;IMPRECISE;CIPOS=0,13;CIEND=0,13;HOMLEN=13;HOMSEQ=ACCTCCCTCACCA;DELCLASS=I;GENE=ATP8:P,ATP6:F,COX3:F,TRNG:F,ND3:F,TRNR:F,ND4L:F,ND4:F,TRNH:F,TRNS2:F,TRNL2:F,ND5:P;NGENE=12;COMMON;HGVS=NC_012920.1:m.8483_13446del;JR=154;SR=401;AFJ=0.277;AFC=0.268;AFDIFF=0.010;CVGR=0.732;SRCONS=1.000;SRSB=0.496;JSUP=HIGH;SVCONF=83;SVIMPACT=85;SVIMPACT_BAND=SEVERE;REPEAT	GT:DP:AD:AF:SR	0/1:575:401,154:0.268:154

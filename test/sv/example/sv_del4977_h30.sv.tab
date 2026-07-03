@@ -1,0 +1,2 @@
+sample	chrom	svtype	pos_bp5	end_bp3	svlen	svclaim	jr	sr	af_junction	af_coverage	afdiff	cvgr	flank_dp	homlen	homseq	delclass	common	ngene	gene_list	hgvs	filter	flags	srcons	srsb	jsup	svconf	svimpact	svimpact_band
+sv_del4977_h30	chrM	DEL	8482	13446	4964	DJ	154	401	0.277	0.268	0.010	0.732	575	13	ACCTCCCTCACCA	I	1	12	ATP8:P,ATP6:F,COX3:F,TRNG:F,ND3:F,TRNR:F,ND4L:F,ND4:F,TRNH:F,TRNS2:F,TRNL2:F,ND5:P	NC_012920.1:m.8483_13446del	PASS	REPEAT	1.000	0.496	HIGH	83	85	SEVERE

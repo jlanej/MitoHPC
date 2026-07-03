@@ -1,0 +1,14 @@
+del	het	aligner	detected	filter	svclaim	jsup	jr	afj	afc	bp_err	sa_reads	clip_only
+DEL	0.10	bwa_prod	1	PASS	J	HIGH	473	0.081	0.092	13	195	23
+DEL	0.10	bwa_T20	1	PASS	J	HIGH	473	0.081	0.092	13	201	17
+DEL	0.10	bwa_T15	1	PASS	J	HIGH	473	0.081	0.092	13	201	17
+DEL	0.10	bwa_L2	1	PASS	J	HIGH	473	0.081	0.092	13	195	23
+DEL	0.10	bwa_T15_L2	1	PASS	J	HIGH	473	0.081	0.092	13	201	17
+DEL	0.10	minimap2_sr	1	PASS	J	HIGH	473	0.081	0.092	13	210	18
+# harvesting OFF (HP_SV_MINCLIP=0) comparison at het=0.10 — the aligner -T threshold then matters by ~5%, harvesting equalizes it:
+#   bwa_prod      JR_off=416 (vs JR_on=473)
+#   bwa_T20       JR_off=435 (vs JR_on=473)
+#   bwa_T15       JR_off=435 (vs JR_on=473)
+#   bwa_L2        JR_off=416 (vs JR_on=473)
+#   bwa_T15_L2    JR_off=435 (vs JR_on=473)
+#   minimap2_sr   JR_off=414 (vs JR_on=473)

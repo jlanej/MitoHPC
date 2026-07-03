@@ -1,0 +1,33 @@
+name: SV caller test
+
+# Fast, image-independent gate: runs the structural-variant caller against the
+# committed mock BAMs (test/sv/) on the runner. Complements the in-image smoke
+# test in docker-publish.yml — this gives quick feedback even if the full image
+# build is slow or a download is flaky.
+#
+# The caller (scripts/callsv.py) is pure Python + pysam (htslib bundled in the
+# wheel), so this job needs no samtools/bedtools — just python3 + pysam.
+
+on:
+  push:
+    branches: [ "main", "sv-calling" ]
+  pull_request:
+    branches: [ "main", "sv-calling" ]
+
+jobs:
+  sv-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install pysam (manylinux wheel; bundles htslib)
+        run: python -m pip install --no-cache-dir 'pysam==0.24.0'
+
+      - name: Run SV caller against mock data
+        run: bash test/sv/run_test.sh

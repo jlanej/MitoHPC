@@ -71,7 +71,7 @@ log() {
 # Function to find sample directories
 find_sample_dirs() {
     local base_dir="$1"
-    find "$base_dir" -mindepth 1 -maxdepth 2 -type d -name "bams" -o -name "crams" | \
+    find "$base_dir" -mindepth 1 -maxdepth 2 -type d \( -name "bams" -o -name "crams" \) | \
         xargs -I {} dirname {} | sort -u | \
         while read dir; do
             # Check if directory actually contains BAM/CRAM files
@@ -152,11 +152,13 @@ process_sample() {
         eval "$cmd" 2>&1 | while IFS= read -r line; do
             log "[$sample_name] $line"
         done
-        
-        if [ $? -eq 0 ]; then
+        # $? here is the `while` (last pipeline stage), not the container — read PIPESTATUS[0]
+        # so a failed run is actually detected instead of masked by the log loop succeeding.
+        local rc=${PIPESTATUS[0]}
+        if [ "$rc" -eq 0 ]; then
             log "Successfully completed processing sample: $sample_name"
         else
-            echo "Error processing sample: $sample_name" >&2
+            echo "Error processing sample: $sample_name (exit code $rc)" >&2
             return 1
         fi
     fi
@@ -175,8 +177,10 @@ run_batch() {
     log "  Container image: $container_image"
     log "  Output base: $output_base"
     
-    # Find all sample directories
-    local sample_dirs=($(find_sample_dirs "$base_dir"))
+    # Find all sample directories. mapfile (newline-delimited) avoids the word-splitting and
+    # glob-expansion of `arr=($(...))`, which would mangle paths containing spaces or glob chars.
+    local sample_dirs=()
+    mapfile -t sample_dirs < <(find_sample_dirs "$base_dir")
     
     if [ ${#sample_dirs[@]} -eq 0 ]; then
         echo "Error: No sample directories with BAM/CRAM files found in $base_dir" >&2
@@ -195,18 +199,19 @@ run_batch() {
     export -f process_sample log
     export VERBOSE DRY_RUN NUM_JOBS="$num_jobs"
     
-    # Use GNU parallel or xargs for parallel processing
+    # Use GNU parallel or xargs for parallel processing. Capture the real status via `|| ...`
+    # so a failure is reported instead of aborting silently under `set -e` (which would make
+    # the error branch below dead code).
+    local exit_code=0
     if command -v parallel > /dev/null 2>&1; then
         log "Using GNU parallel for batch processing"
         printf '%s\n' "${sample_dirs[@]}" | \
-            parallel -j "$num_jobs" process_sample {} "$output_base" "$container_image"
+            parallel -j "$num_jobs" process_sample {} "$output_base" "$container_image" || exit_code=$?
     else
         log "GNU parallel not available, using xargs"
         printf '%s\n' "${sample_dirs[@]}" | \
-            xargs -I {} -P "$num_jobs" bash -c 'process_sample "$@"' _ {} "$output_base" "$container_image"
+            xargs -I {} -P "$num_jobs" bash -c 'process_sample "$@"' _ {} "$output_base" "$container_image" || exit_code=$?
     fi
-    
-    local exit_code=$?
     
     if [ $exit_code -eq 0 ]; then
         log "Batch processing completed successfully"

@@ -9,11 +9,11 @@ on:
   schedule:
     - cron: '44 7 * * *'
   push:
-    branches: [ "main" ]
+    branches: [ "main", "sv-calling" ]
     # Publish semver tags as releases.
     tags: [ 'v*.*.*' ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "sv-calling" ]
 
 env:
   # Use docker.io for Docker Hub if empty
@@ -69,7 +69,47 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
-      # Build and push Docker image with Buildx (don't push on PR)
+      # Build the image locally (single platform, loaded into the runner's docker)
+      # so we can smoke-test it before publishing. Cached via GHA so the push build
+      # below is fast.
+      # https://github.com/docker/build-push-action
+      - name: Build image for testing
+        id: build-test
+        uses: docker/build-push-action@0565240e2d4ab88bba5387d719585280857ece09 # v5.0.0
+        with:
+          context: .
+          load: true
+          tags: mitohpc:citest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Run the SV caller against the committed mock data INSIDE the freshly built
+      # image. Fails the build if the caller does not run or a call regresses.
+      - name: SV caller smoke test (in image, vs mock data)
+        run: docker run --rm mitohpc:citest bash /MitoHPC/test/sv/run_test.sh
+
+      # Verify the samplot visualization is actually installed and works in the image:
+      # confirm the binary, then run the SV caller with HP_SV_PLOT=1 on a mock deletion and
+      # assert a PNG + manifest are produced (this is the end-to-end HP_SV_PLOT path that the
+      # batch wrapper enables by default). A clear, separate pass/fail signal for samplot.
+      - name: samplot visualization smoke test (in image)
+        run: |
+          docker run --rm mitohpc:citest samplot --version
+          # matplotlib>=3.7 regresses samplot's axes (a spurious 0..1 axis overprints the genomic/coverage
+          # axes; samplot #189/#201). Assert the pinned <3.7 so a base-image/dep bump can't sneak it back.
+          docker run --rm mitohpc:citest python3 -c \
+            'import matplotlib as m; print("matplotlib", m.__version__); v=tuple(map(int,m.__version__.split(".")[:2])); assert v<(3,7), m.__version__'
+          docker run --rm mitohpc:citest bash -euc '
+            cd /MitoHPC
+            HP_SV_PLOT=1 HP_MT=chrM bash scripts/callSV.sh viz \
+              test/sv/bams/sv_del4977_h30.bam /tmp/viz
+            test -s /tmp/viz.sv.plots.tsv
+            png=$(cut -f7 /tmp/viz.sv.plots.tsv | head -1)
+            test -s "$png" && head -c8 "$png" | grep -q PNG
+            echo "samplot OK: $(wc -l < /tmp/viz.sv.plots.tsv) plot(s), $png"'
+
+      # Build and push Docker image with Buildx (don't push on PR). Reuses the GHA
+      # cache from the test build, so this is fast.
       # https://github.com/docker/build-push-action
       - name: Build and push Docker image
         id: build-and-push
